@@ -91,11 +91,15 @@
             
             request.onsuccess = (event) => {
                 const db = event.target.result;
-                const chatIdFromUrl = window.location.pathname.match(/\/c\/([a-zA-Z0-9_-]+)/);
-                if (!chatIdFromUrl) {
+                
+                // --- 修正後的網址讀取邏輯 ---
+                const hash = window.location.hash; // 取得網址中 '#' 後面的部分
+                if (!hash ||!hash.startsWith('#chat=')) {
                     return reject(new Error('無法從 URL 中確定當前對話 ID。請先進入一個對話。'));
                 }
-                const currentChatKey = `CHAT_${chatIdFromUrl[1]}`;
+                const chatId = hash.substring('#chat='.length); // 移除 '#chat=' 以取得 ID
+                const currentChatKey = `CHAT_${chatId}`;
+                // --- 邏輯修正結束 ---
 
                 if (!db.objectStoreNames.contains('chats')) {
                     return reject(new Error("在資料庫中找不到 'chats' 物件儲存區。"));
@@ -123,8 +127,8 @@
         const lastUserQuestion = messages.filter(m => m.role === 'user').pop()?.content?? 'No user question found.';
         
         const transcript = messages
-          .map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model?? 'N/A'})**: ${msg.content}`)
-          .join('\n\n---\n\n');
+         .map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model?? 'N/A'})**: ${msg.content}`)
+         .join('\n\n---\n\n');
 
         const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。
 
@@ -240,7 +244,6 @@
     function initializeExtension() {
         // Use MutationObserver to wait for the chat UI to be ready
         const observer = new MutationObserver((mutations, obs) => {
-            // A more robust selector might be needed if TypingMind's UI changes
             const targetNode = document.querySelector('textarea');
             if (targetNode) {
                 createAnalyzerButton();
