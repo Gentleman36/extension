@@ -84,10 +84,12 @@
     // --- DATA RETRIEVAL (INDEXEDDB) ---
     function getChatHistory() {
         return new Promise((resolve, reject) => {
-            // --- 修正後的資料庫名稱 ---
-            const dbName = 'localforage'; // TypingMind V2 uses 'localforage'
-            const request = indexedDB.open(dbName, 2); // Version might be 2
+            // --- 最終修正後的資料庫和 Object Store 名稱 ---
+            const dbName = `typingmind-app-${window.location.host}`;
+            const storeName = 'chats';
             // --- 邏輯修正結束 ---
+
+            const request = indexedDB.open(dbName);
 
             request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫。'));
             
@@ -101,15 +103,12 @@
                 const chatId = hash.substring('#chat='.length);
                 const currentChatKey = `CHAT_${chatId}`;
 
-                // --- 修正後的 Object Store 名稱 ---
-                const storeName = 'keyvaluepairs';
                 if (!db.objectStoreNames.contains(storeName)) {
-                    return reject(new Error(`在資料庫中找不到 '${storeName}' 物件儲存區。`));
+                    return reject(new Error(`在資料庫中找不到 '${storeName}' 物件儲存區。請確認 TypingMind 資料庫結構是否已變更。`));
                 }
+                
                 const transaction = db.transaction([storeName], 'readonly');
                 const objectStore = transaction.objectStore(storeName);
-                // --- 邏輯修正結束 ---
-                
                 const getRequest = objectStore.get(currentChatKey);
 
                 getRequest.onerror = () => reject(new Error('讀取聊天資料時出錯。'));
