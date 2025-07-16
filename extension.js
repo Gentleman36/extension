@@ -5,26 +5,24 @@
     // --- CONFIGURATION ---
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o-mini';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
-    const MODEL_STORAGE_KEY = 'typingmind_analyzer_model'; // Key for saving the user's preferred model
+    const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
 
     // --- DATABASE CONFIGURATION ---
     const DB_NAME = 'TypingMindAnalyzerDB';
     const REPORT_STORE_NAME = 'analysis_reports';
     const DB_VERSION = 1;
-    let db; // To hold the database instance
+    let db;
 
     // --- DATABASE HELPERS ---
     function initDB() {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(DB_NAME, DB_VERSION);
-
             request.onupgradeneeded = (event) => {
                 const dbInstance = event.target.result;
                 if (!dbInstance.objectStoreNames.contains(REPORT_STORE_NAME)) {
                     dbInstance.createObjectStore(REPORT_STORE_NAME, { keyPath: 'chatId' });
                 }
             };
-
             request.onerror = (event) => reject(`資料庫錯誤: ${event.target.errorCode}`);
             request.onsuccess = (event) => {
                 db = event.target.result;
@@ -50,7 +48,7 @@
             const transaction = db.transaction([REPORT_STORE_NAME], 'readonly');
             const store = transaction.objectStore(REPORT_STORE_NAME);
             const request = store.get(chatId);
-            request.onsuccess = () => resolve(request.result); // Returns the record or undefined
+            request.onsuccess = () => resolve(request.result);
             request.onerror = (event) => reject(`讀取報告失敗: ${event.target.error}`);
         });
     }
@@ -62,43 +60,25 @@
 
         const container = document.createElement('div');
         container.id = 'analyzer-controls-container';
-        container.style.cssText = `
-            position: fixed; bottom: 20px; right: 20px; z-index: 9999;
-            display: flex; gap: 10px; align-items: center;
-        `;
-
-        // Main action button (will be updated dynamically)
+        container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
+        
         const mainButton = document.createElement('button');
         mainButton.id = 'analyzer-main-button';
-        mainButton.style.cssText = `
-            background-color: #4A90E2; color: white; border: none; border-radius: 8px;
-            padding: 10px 15px; font-size: 14px; cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s;
-        `;
+        mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s;`;
         mainButton.onmouseover = () => mainButton.style.backgroundColor = '#357ABD';
         mainButton.onmouseout = () => mainButton.style.backgroundColor = '#4A90E2';
 
-        // Re-analyze button (initially hidden)
         const reanalyzeButton = document.createElement('button');
         reanalyzeButton.id = 'analyzer-reanalyze-button';
         reanalyzeButton.innerHTML = '🔄';
         reanalyzeButton.title = '重新分析';
-        reanalyzeButton.style.cssText = `
-            background-color: #6c757d; color: white; border: none; border-radius: 50%;
-            width: 38px; height: 38px; font-size: 18px; cursor: pointer; display: none;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;
-        `;
-        reanalyzeButton.onclick = () => handleAnalysisRequest(true); // Force re-analysis
+        reanalyzeButton.style.cssText = `background-color: #6c757d; color: white; border: none; border-radius: 50%; width: 38px; height: 38px; font-size: 18px; cursor: pointer; display: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;`;
+        reanalyzeButton.onclick = () => handleAnalysisRequest(true);
 
-        // Settings button
         const settingsButton = document.createElement('button');
         settingsButton.innerHTML = '⚙️';
         settingsButton.title = '設定分析模型';
-        settingsButton.style.cssText = `
-            background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 50%;
-            width: 38px; height: 38px; font-size: 20px; cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;
-        `;
+        settingsButton.style.cssText = `background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 50%; width: 38px; height: 38px; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;`;
         settingsButton.onclick = showSettingsModal;
 
         container.appendChild(reanalyzeButton);
@@ -106,24 +86,21 @@
         container.appendChild(settingsButton);
         document.body.appendChild(container);
 
-        updateUIState(); // Initial UI update
+        updateUIState();
     }
 
     async function updateUIState() {
         const mainButton = document.getElementById('analyzer-main-button');
         const reanalyzeButton = document.getElementById('analyzer-reanalyze-button');
         if (!mainButton) return;
-
         const chatId = getChatIdFromUrl();
         if (!chatId) {
             mainButton.style.display = 'none';
             reanalyzeButton.style.display = 'none';
             return;
         }
-
         mainButton.style.display = 'inline-block';
         const existingReport = await getReport(chatId);
-
         if (existingReport) {
             mainButton.innerHTML = '📄 查看報告';
             mainButton.onclick = () => showModal(formatAnalysisToHtml(existingReport.report), true);
@@ -142,7 +119,6 @@
             alert('無法獲取對話 ID。');
             return;
         }
-
         if (!isReanalysis) {
             const existingReport = await getReport(chatId);
             if (existingReport) {
@@ -150,7 +126,6 @@
                 return;
             }
         }
-
         try {
             let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
             if (!apiKey) {
@@ -158,22 +133,18 @@
                 if (!apiKey) return;
                 localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
             }
-
             showModal('讀取對話紀錄中...');
             const messages = await getTypingMindChatHistory();
             if (messages.length < 2) {
-                alert('當前對話訊息不足，無法進行分析。');
                 hideModal();
+                alert('當前對話訊息不足，無法進行分析。');
                 return;
             }
-
             showModal('分析中，請稍候...');
             const analysisJson = await analyzeConversation(apiKey, messages);
-            
             await saveReport(chatId, analysisJson);
             showModal(formatAnalysisToHtml(analysisJson), true);
             updateUIState();
-
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
             showModal(`<h3>發生錯誤</h3><pre style="white-space: pre-wrap; word-wrap: break-word;">${error.message}</pre>`, true);
@@ -183,23 +154,16 @@
     // --- DATA RETRIEVAL (TypingMind's DB) ---
     function getTypingMindChatHistory() {
         return new Promise((resolve, reject) => {
-            const dbName = 'keyval-store';
-            const storeName = 'keyval';
-            const request = indexedDB.open(dbName);
-
+            const request = indexedDB.open('keyval-store');
             request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫 (keyval-store)。'));
-            
             request.onsuccess = (event) => {
                 const tmDb = event.target.result;
                 const chatId = getChatIdFromUrl();
                 if (!chatId) return reject(new Error('無法從 URL 中確定當前對話 ID。'));
-                
-                const currentChatKey = `CHAT_${chatId}`; 
-
-                const transaction = tmDb.transaction([storeName], 'readonly');
-                const objectStore = transaction.objectStore(storeName);
+                const currentChatKey = `CHAT_${chatId}`;
+                const transaction = tmDb.transaction(['keyval'], 'readonly');
+                const objectStore = transaction.objectStore('keyval');
                 const getRequest = objectStore.get(currentChatKey);
-
                 getRequest.onerror = () => reject(new Error('讀取聊天資料時出錯。'));
                 getRequest.onsuccess = () => {
                     const chatData = getRequest.result;
@@ -213,16 +177,29 @@
         });
     }
 
-    // --- LLM INTERACTION ---
+    // --- LLM INTERACTION [MODIFIED SECTION] ---
     async function analyzeConversation(apiKey, messages) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
-        const lastUserQuestion = messages.filter(m => m.role === 'user').pop()?.content ?? 'No user question found.';
+
+        // Helper function to safely stringify content
+        const stringifyContent = (content) => {
+            if (content === null || content === undefined) return '';
+            if (typeof content === 'string') return content;
+            // If content is an object or array, format it as a JSON string
+            return JSON.stringify(content, null, 2);
+        };
+
+        // Find the last user message and safely get its content
+        const lastUserMsg = messages.filter(m => m.role === 'user').pop();
+        const lastUserQuestion = lastUserMsg ? stringifyContent(lastUserMsg.content) : 'No user question found.';
         
-        // --- THIS IS THE FIX ---
+        // Build the transcript, safely handling all content types
         const transcript = messages
-            .map(msg => `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${msg.model ?? 'N/A'})**: ${msg.content}`)
+            .map(msg => {
+                const contentStr = stringifyContent(msg.content);
+                return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${msg.model ?? 'N/A'})**: ${contentStr}`;
+            })
             .join('\n\n---\n\n');
-        // --- END OF FIX ---
 
         const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。你的最終輸出必須是一個結構完全正確的 JSON 物件，不得包含任何額外的解釋性文字。`;
         const userContentForAnalyzer = `--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
@@ -278,11 +255,9 @@
             <div style="margin-top: 20px;">
                 <label for="model-input" style="display: block; margin-bottom: 8px;">分析模型名稱:</label>
                 <input type="text" id="model-input" value="${currentModel}" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background-color: #333; color: #f0f0f0;">
-            </div>
-        `;
+            </div>`;
         const modal = document.createElement('div');
         modal.innerHTML = content;
-
         const saveButton = document.createElement('button');
         saveButton.innerText = '儲存';
         saveButton.style.cssText = `display: block; margin: 20px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #28a745; color: white;`;
@@ -308,7 +283,7 @@
     }
 
     function formatAnalysisToHtml(json) {
-        return `<pre style="white-space: pre-wrap; word-wrap: break-word;">${JSON.stringify(json, null, 2)}</pre>`;
+        return `<pre style="white-space: pre-wrap; word-wrap: break-word; font-size: 14px;">${JSON.stringify(json, null, 2)}</pre>`;
     }
     
     function getChatIdFromUrl() {
@@ -322,7 +297,6 @@
     // --- INITIALIZATION ---
     async function initialize() {
         await initDB();
-        
         const observer = new MutationObserver(() => {
             if (document.querySelector('textarea')) {
                 if (!document.getElementById('analyzer-controls-container')) {
@@ -331,7 +305,6 @@
             }
         });
         observer.observe(document.body, { childList: true, subtree: true });
-
         window.addEventListener('hashchange', updateUIState, false);
     }
 
