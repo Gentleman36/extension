@@ -8,15 +8,24 @@
 
     // --- UI CREATION ---
     function createAnalyzerButton() {
-        const button = document.createElement('button');
-        button.innerHTML = '🤖 分析對話';
-        button.title = '分析當前對話中不同模型的回應';
-        // Basic styling to make it look like a part of TypingMind
-        button.style.cssText = `
+        // Check if button already exists
+        if (document.getElementById('analyzer-button-container')) {
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.id = 'analyzer-button-container';
+        container.style.cssText = `
             position: fixed;
             bottom: 20px;
             right: 20px;
             z-index: 9999;
+        `;
+
+        const button = document.createElement('button');
+        button.innerHTML = '🤖 分析對話';
+        button.title = '分析當前對話中不同模型的回應';
+        button.style.cssText = `
             background-color: #4A90E2;
             color: white;
             border: none;
@@ -29,9 +38,11 @@
         `;
         button.onmouseover = () => button.style.backgroundColor = '#357ABD';
         button.onmouseout = () => button.style.backgroundColor = '#4A90E2';
-
+        
         button.addEventListener('click', handleAnalysisRequest);
-        document.body.appendChild(button);
+        
+        container.appendChild(button);
+        document.body.appendChild(container);
     }
 
     // --- CORE LOGIC ---
@@ -49,22 +60,24 @@
             }
 
             // 2. Get Chat History from IndexedDB
+            showModal('讀取對話紀錄中...');
             const messages = await getChatHistory();
             if (messages.length < 2) {
                 alert('當前對話訊息不足，無法進行分析。');
+                hideModal();
                 return;
             }
 
             // 3. Prepare data and call analyzer LLM
             showModal('分析中，請稍候...');
             const analysisJson = await analyzeConversation(apiKey, messages);
-
+            
             // 4. Display result
             showModal(formatAnalysisToHtml(analysisJson), true);
 
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
-            showModal(`發生錯誤：<br><pre>${error.message}</pre>`, true);
+            showModal(`<h3>發生錯誤</h3><pre style="white-space: pre-wrap; word-wrap: break-word;">${error.message}</pre>`, true);
         }
     }
 
@@ -75,7 +88,7 @@
             const request = indexedDB.open(dbName);
 
             request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫。'));
-
+            
             request.onsuccess = (event) => {
                 const db = event.target.result;
                 const chatIdFromUrl = window.location.pathname.match(/\/c\/([a-zA-Z0-9_-]+)/);
@@ -107,13 +120,11 @@
 
     // --- LLM INTERACTION ---
     async function analyzeConversation(apiKey, messages) {
-        // Find the last user question to provide context
-        const lastUserQuestion = messages.filter(m => m.role === 'user').pop()?.content || 'No user question found.';
-
-        // Format the history for the analyzer model
+        const lastUserQuestion = messages.filter(m => m.role === 'user').pop()?.content?? 'No user question found.';
+        
         const transcript = messages
-            .map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model || 'N/A'})**: ${msg.content}`)
-            .join('\n\n---\n\n');
+          .map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model?? 'N/A'})**: ${msg.content}`)
+          .join('\n\n---\n\n');
 
         const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。
 
@@ -149,107 +160,76 @@
         });
 
         if (!response.ok) {
-            const errorData = await response.json().catch(() => ({})); // Prevent error on parsing empty/non-json responses
-            throw new Error(`API 錯誤: ${response.status} - ${errorData.error?.message || '未知錯誤'}`);
+            const errorData = await response.json();
+            throw new Error(`API 錯誤: ${response.status} - ${errorData.error?.message?? '未知錯誤'}`);
         }
 
         const data = await response.json();
-        // Assuming the content is a JSON string that needs to be parsed.
-        // If the API already returns a parsed object in `data.choices[0].message.content`,
-        // and you've set `response_format: { type: "json_object" }`,
-        // you might not need to parse it again.
-        try {
-            if (typeof data.choices[0].message.content === 'string') {
-                return JSON.parse(data.choices[0].message.content);
-            }
-            return data.choices[0].message.content; // It's already an object
-        } catch (e) {
-            throw new Error('無法解析來自 API 的 JSON 回應。');
-        }
+        return JSON.parse(data.choices.message.content);
     }
 
     // --- UI (MODAL) ---
     function showModal(content, isResult = false) {
-        let modal = document.getElementById('analyzer-modal');
-        let backdrop = document.getElementById('analyzer-backdrop');
+        hideModal(); // Remove any existing modal first
 
-        // Close existing modal if any
-        if (modal) {
-            document.body.removeChild(modal);
-        }
-        if(backdrop) {
-            document.body.removeChild(backdrop);
-        }
-
-        modal = document.createElement('div');
-        modal.id = 'analyzer-modal';
-        modal.style.cssText = `
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -45%);
-            width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto;
-            background-color: white; color: black; border-radius: 12px;
-            padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            z-index: 10000; transition: opacity 0.3s, transform 0.3s;
-            opacity: 0;
-        `;
-
-        backdrop = document.createElement('div');
+        const backdrop = document.createElement('div');
         backdrop.id = 'analyzer-backdrop';
         backdrop.style.cssText = `
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background-color: rgba(0,0,0,0.5); z-index: 9999;
             opacity: 0; transition: opacity 0.3s;
         `;
-
-        const closeModal = () => {
-            if (modal) modal.style.opacity = '0';
-            if (modal) modal.style.transform = 'translate(-50%, -45%)';
-            if (backdrop) backdrop.style.opacity = '0';
-            setTimeout(() => {
-                if (modal && modal.parentElement) document.body.removeChild(modal);
-                if (backdrop && backdrop.parentElement) document.body.removeChild(backdrop);
-            }, 300);
-        };
-
-        backdrop.addEventListener('click', closeModal);
-        document.body.appendChild(backdrop);
-        document.body.appendChild(modal);
+        
+        const modal = document.createElement('div');
+        modal.id = 'analyzer-modal';
+        modal.style.cssText = `
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -60%);
+            width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto;
+            background-color: white; color: black; border-radius: 12px;
+            padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            z-index: 10000; transition: opacity 0.3s, transform 0.3s; opacity: 0;
+        `;
+        
+        backdrop.addEventListener('click', hideModal);
+        modal.innerHTML = content;
 
         if (isResult) {
-            modal.innerHTML = formatAnalysisToHtml(content);
             const closeButton = document.createElement('button');
             closeButton.innerText = '關閉';
-            closeButton.style.cssText = 'margin-top: 20px; padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; display: block; margin-left: auto; margin-right: auto;';
-            closeButton.onclick = closeModal;
+            closeButton.style.cssText = 'display: block; margin: 20px auto 0; padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer;';
+            closeButton.onclick = hideModal;
             modal.appendChild(closeButton);
-        } else {
-            modal.innerHTML = content;
         }
 
-        // Trigger fade-in animation
+        document.body.appendChild(backdrop);
+        document.body.appendChild(modal);
+        
         setTimeout(() => {
-            if(modal) modal.style.opacity = '1';
-            if(modal) modal.style.transform = 'translate(-50%, -50%)';
-            if(backdrop) backdrop.style.opacity = '1';
+            backdrop.style.opacity = '1';
+            modal.style.opacity = '1';
+            modal.style.transform = 'translate(-50%, -50%)';
         }, 10);
     }
 
-    function formatAnalysisToHtml(json) {
-        if (typeof json !== 'object' || json === null) {
-            return `<pre>${json}</pre>`;
+    function hideModal() {
+        const modal = document.getElementById('analyzer-modal');
+        const backdrop = document.getElementById('analyzer-backdrop');
+        if (modal && backdrop) {
+            document.body.removeChild(modal);
+            document.body.removeChild(backdrop);
         }
+    }
+
+    function formatAnalysisToHtml(json) {
         let html = '<h3>分析報告</h3>';
         for (const key in json) {
-            html += `<div style="margin-top: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;"><strong>${key.replace(/_/g, ' ')}:</strong>`;
+            html += `<div style="margin-top: 15px; border-left: 3px solid #eee; padding-left: 10px;">
+                        <strong style="text-transform: capitalize;">${key.replace(/_/g, ' ')}:</strong>`;
             const value = json[key];
-            if (typeof value === 'object' && value !== null) {
-                let listHtml = '<ul style="list-style-type: none; padding-left: 10px;">';
-                for(const itemKey in value){
-                    listHtml += `<li style="margin-top: 8px;"><strong>${itemKey}:</strong><div style="background-color: #f0f0f0; padding: 10px; border-radius: 6px; white-space: pre-wrap; margin-top: 4px;">${JSON.stringify(value[itemKey], null, 2)}</div></li>`
-                }
-                listHtml += '</ul>'
-                html += listHtml;
+            if (typeof value === 'object' && value!== null) {
+                html += `<pre style="background-color: #f0f0f0; padding: 10px; border-radius: 6px; white-space: pre-wrap; margin-top: 5px;">${JSON.stringify(value, null, 2)}</pre>`;
             } else {
-                html += `<p style="margin: 5px 0 0 10px; background-color: #f9f9f9; padding: 8px; border-radius: 4px;">${value}</p>`;
+                html += `<p style="margin: 5px 0 0 0;">${value}</p>`;
             }
             html += `</div>`;
         }
@@ -257,7 +237,27 @@
     }
 
     // --- INITIALIZATION ---
-    // Wait for the main app to load before adding our button
-    setTimeout(createAnalyzerButton, 3000);
+    function initializeExtension() {
+        // Use MutationObserver to wait for the chat UI to be ready
+        const observer = new MutationObserver((mutations, obs) => {
+            // A more robust selector might be needed if TypingMind's UI changes
+            const targetNode = document.querySelector('textarea');
+            if (targetNode) {
+                createAnalyzerButton();
+                obs.disconnect(); // Stop observing once the button is created
+            }
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        // Failsafe timeout in case the target node never appears
+        setTimeout(() => observer.disconnect(), 10000);
+    }
+
+    // Run initialization
+    initializeExtension();
 
 })();
