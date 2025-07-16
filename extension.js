@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TypingMind 對話分析器
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  分析 TypingMind 對話中不同模型的回應，並提供設定介面與報告儲存功能。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
@@ -13,7 +13,7 @@
     'use strict';
 
     // --- CONFIGURATION ---
-    const SCRIPT_VERSION = '2.1'; // Script version constant
+    const SCRIPT_VERSION = '2.2'; // Script version constant
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o-mini';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
@@ -232,7 +232,7 @@
         return JSON.parse(data.choices[0].message.content);
     }
     
-    // --- UI (MODALS) - REWRITTEN IN V2.0 ---
+    // --- UI (MODALS) - REWRITTEN IN V2.0, FIXED IN V2.2 ---
 
     function createModalShell() {
         hideModal();
@@ -244,7 +244,11 @@
         modal.id = 'analyzer-modal';
         modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column;`;
         const contentArea = document.createElement('div');
-        contentArea.style.overflowY = 'auto';
+        
+        // --- THIS IS THE FIX V2.2 ---
+        // Add flex properties to make the content area scrollable within the flex container
+        contentArea.style.cssText = 'overflow-y: auto; flex: 1; min-height: 0;';
+        
         modal.appendChild(contentArea);
         document.body.appendChild(backdrop);
         document.body.appendChild(modal);
@@ -267,11 +271,8 @@
         contentArea.parentElement.appendChild(closeButton);
     }
 
-    // --- [MODIFIED SECTION V2.1] ---
     function showSettingsModal() {
         const contentArea = createModalShell();
-        
-        // Use innerHTML for the static parts
         contentArea.innerHTML = `
             <h3 style="text-align: center; color: #333; margin-top: 0;">設定</h3>
             <div style="margin-top: 20px;">
@@ -279,15 +280,11 @@
                 <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333; font-size: 14px;">
             </div>
         `;
-        
         const buttonContainer = document.createElement('div');
         buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center;`;
-
-        // Add the version display
         const versionDiv = document.createElement('div');
         versionDiv.style.cssText = `font-size: 12px; color: #999; margin-right: auto;`;
         versionDiv.textContent = `Version: ${SCRIPT_VERSION}`;
-        
         const saveHandler = () => {
             const newModel = document.getElementById('model-input').value;
             if (newModel) {
@@ -298,11 +295,9 @@
                 alert('模型名稱不可為空！');
             }
         };
-        
         const saveButton = createButton('儲存', saveHandler, 'green');
         const closeButton = createButton('取消', hideModal, 'grey');
-        
-        buttonContainer.appendChild(versionDiv); // Add version to the left
+        buttonContainer.appendChild(versionDiv);
         buttonContainer.appendChild(closeButton);
         buttonContainer.appendChild(saveButton);
         contentArea.appendChild(buttonContainer);
