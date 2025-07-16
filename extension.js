@@ -145,7 +145,7 @@
         }
     }
 
-    // --- DATA RETRIEVAL (TypingMind's DB) - [FINAL MODIFIED SECTION] ---
+    // --- DATA RETRIEVAL (TypingMind's DB) ---
     function getTypingMindChatHistory() {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open('keyval-store');
@@ -164,28 +164,18 @@
                     if (!chatData || !chatData.messages) {
                         return reject(new Error(`使用金鑰 '${currentChatKey}' 找不到對應的聊天資料。`));
                     }
-
-                    // --- NEW LOGIC TO PARSE MULTI-MODEL RESPONSES ---
                     const allMessages = [];
                     for (const turn of chatData.messages) {
                         if (turn.role === 'user') {
-                            // It's a user message, add it directly.
                             allMessages.push(turn);
                         } else if (turn.type === 'tm_multi_responses' && turn.responses) {
-                            // It's the special multi-response container.
                             for (const response of turn.responses) {
                                 if (response.messages && response.model) {
-                                    // Extract messages from each model's response.
-                                    // Inject the parent `model` ID into each message for identification.
-                                    const messagesWithModel = response.messages.map(msg => ({
-                                        ...msg,
-                                        model: response.model 
-                                    }));
+                                    const messagesWithModel = response.messages.map(msg => ({ ...msg, model: response.model }));
                                     allMessages.push(...messagesWithModel);
                                 }
                             }
                         } else if (turn.role === 'assistant') {
-                            // This handles regular, non-multi-model assistant messages.
                             allMessages.push(turn);
                         }
                     }
@@ -207,7 +197,6 @@
         const lastUserQuestion = lastUserMsg ? stringifyContent(lastUserMsg.content) : 'No user question found.';
         const transcript = messages.map(msg => {
             const contentStr = stringifyContent(msg.content);
-            // Use the model ID we injected earlier.
             const modelId = msg.model || 'N/A';
             return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${modelId})**: ${contentStr}`;
         }).join('\n\n---\n\n');
@@ -230,9 +219,9 @@
         return JSON.parse(data.choices[0].message.content);
     }
 
-    // --- UI (MODALS) ---
-    function showModal(content, isResult = false) {
-        hideModal();
+    // --- UI (MODALS) - [REFACTORED SECTION] ---
+    function showModal(content, showCloseButton = false) {
+        hideModal(); // Ensure no modal is open
         const backdrop = document.createElement('div');
         backdrop.id = 'analyzer-backdrop';
         backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10000;`;
@@ -240,19 +229,21 @@
         modal.id = 'analyzer-modal';
         modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; overflow-y: auto; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;`;
         backdrop.addEventListener('click', hideModal);
-        const contentContainer = document.createElement('div');
+
+        // Accept either an HTML string or a DOM Node
         if (typeof content === 'string') {
-            contentContainer.innerHTML = content;
-        } else {
-            contentContainer.innerHTML = formatAnalysisToHtml(content);
+            modal.innerHTML = content;
+        } else if (content instanceof Node) {
+            modal.appendChild(content);
         }
-        modal.appendChild(contentContainer);
-        if (isResult) {
+
+        if (showCloseButton) {
             const closeButton = document.createElement('button');
             closeButton.innerText = '關閉';
-            closeButton.style.cssText = `display: block; margin: 25px auto 0; padding: 10px 20px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; background-color: #f0f0f0; color: #333;`;
-            closeButton.onmouseover = () => closeButton.style.backgroundColor = '#e0e0e0';
-            closeButton.onmouseout = () => closeButton.style.backgroundColor = '#f0f0f0';
+            // New, higher-contrast button style
+            closeButton.style.cssText = `display: block; margin: 25px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #6c757d; color: white; font-size: 14px; transition: background-color 0.2s;`;
+            closeButton.onmouseover = () => closeButton.style.backgroundColor = '#5a6268';
+            closeButton.onmouseout = () => closeButton.style.backgroundColor = '#6c757d';
             closeButton.onclick = hideModal;
             modal.appendChild(closeButton);
         }
@@ -261,19 +252,24 @@
     }
 
     function showSettingsModal() {
-        hideModal();
-        const currentModel = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
-        const content = `
+        // Create a container element for the settings content
+        const settingsContent = document.createElement('div');
+        
+        // Use innerHTML for the static parts
+        settingsContent.innerHTML = `
             <h3 style="text-align: center; color: #333;">設定</h3>
             <div style="margin-top: 20px;">
                 <label for="model-input" style="display: block; margin-bottom: 8px; color: #333;">分析模型名稱:</label>
-                <input type="text" id="model-input" value="${currentModel}" style="width: 100%; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333;">
-            </div>`;
-        const modal = document.createElement('div');
-        modal.innerHTML = content;
+                <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333;">
+            </div>
+        `;
+
+        // Create the Save button as a DOM element and attach the event listener
         const saveButton = document.createElement('button');
         saveButton.innerText = '儲存';
-        saveButton.style.cssText = `display: block; margin: 20px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #28a745; color: white;`;
+        saveButton.style.cssText = `display: block; margin: 20px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #28a745; color: white; font-size: 14px; transition: background-color 0.2s;`;
+        saveButton.onmouseover = () => saveButton.style.backgroundColor = '#218838';
+        saveButton.onmouseout = () => saveButton.style.backgroundColor = '#28a745';
         saveButton.onclick = () => {
             const newModel = document.getElementById('model-input').value;
             if (newModel) {
@@ -284,8 +280,12 @@
                 alert('模型名稱不可為空！');
             }
         };
-        modal.appendChild(saveButton);
-        showModal(modal.innerHTML, true);
+
+        // Append the interactive button to the container
+        settingsContent.appendChild(saveButton);
+
+        // Pass the entire container element to showModal
+        showModal(settingsContent, true);
     }
 
     function hideModal() {
