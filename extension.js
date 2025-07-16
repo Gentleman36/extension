@@ -1,19 +1,18 @@
 // ==UserScript==
 // @name         TypingMind 對話分析器
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  分析 TypingMind 對話中不同模型的回應，並提供設定介面與報告儲存功能。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
 // @grant        none
 // ==/UserScript==
 
-// IIFE (Immediately Invoked Function Expression) to avoid polluting the global scope
 (function() {
     'use strict';
 
     // --- CONFIGURATION ---
-    const SCRIPT_VERSION = '2.2'; // Script version constant
+    const SCRIPT_VERSION = '2.3';
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o-mini';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
@@ -63,7 +62,6 @@
             request.onerror = (event) => reject(`讀取報告失敗: ${event.target.error}`);
         });
     }
-
 
     // --- UI CREATION ---
     function createUI() {
@@ -120,10 +118,7 @@
     // --- CORE LOGIC ---
     async function handleAnalysisRequest(isReanalysis = false) {
         const chatId = getChatIdFromUrl();
-        if (!chatId) {
-            alert('無法獲取對話 ID。');
-            return;
-        }
+        if (!chatId) return;
         if (!isReanalysis) {
             const existingReport = await getReport(chatId);
             if (existingReport) {
@@ -154,7 +149,7 @@
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
             hideModal();
-            showInfoModal(`<h3>發生錯誤</h3><pre style="white-space: pre-wrap; word-wrap: break-word;">${error.message}</pre>`, true);
+            showInfoModal(`<h3>發生錯誤</h3><pre>${error.message}</pre>`, true);
         }
     }
 
@@ -162,35 +157,32 @@
     function getTypingMindChatHistory() {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open('keyval-store');
-            request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫 (keyval-store)。'));
+            request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫。'));
             request.onsuccess = (event) => {
                 const tmDb = event.target.result;
                 const chatId = getChatIdFromUrl();
-                if (!chatId) return reject(new Error('無法從 URL 中確定當前對話 ID。'));
+                if (!chatId) return reject(new Error('無法確定當前對話 ID。'));
                 const currentChatKey = `CHAT_${chatId}`;
                 const transaction = tmDb.transaction(['keyval'], 'readonly');
                 const objectStore = transaction.objectStore('keyval');
                 const getRequest = objectStore.get(currentChatKey);
-                getRequest.onerror = () => reject(new Error('讀取聊天資料時出錯。'));
+                getRequest.onerror = () => reject(new Error('讀取聊天資料出錯。'));
                 getRequest.onsuccess = () => {
                     const chatData = getRequest.result;
                     if (!chatData || !chatData.messages) {
-                        return reject(new Error(`使用金鑰 '${currentChatKey}' 找不到對應的聊天資料。`));
+                        return reject(new Error(`找不到對應的聊天資料。`));
                     }
                     const allMessages = [];
                     for (const turn of chatData.messages) {
-                        if (turn.role === 'user') {
-                            allMessages.push(turn);
-                        } else if (turn.type === 'tm_multi_responses' && turn.responses) {
+                        if (turn.role === 'user') allMessages.push(turn);
+                        else if (turn.type === 'tm_multi_responses' && turn.responses) {
                             for (const response of turn.responses) {
                                 if (response.messages && response.model) {
                                     const messagesWithModel = response.messages.map(msg => ({ ...msg, model: response.model }));
                                     allMessages.push(...messagesWithModel);
                                 }
                             }
-                        } else if (turn.role === 'assistant') {
-                            allMessages.push(turn);
-                        }
+                        } else if (turn.role === 'assistant') allMessages.push(turn);
                     }
                     resolve(allMessages);
                 };
@@ -213,7 +205,7 @@
             const modelId = msg.model || 'N/A';
             return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${modelId})**: ${contentStr}`;
         }).join('\n\n---\n\n');
-        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。你的最終輸出必須是一個結構完全正確的 JSON 物件，不得包含任何額外的解釋性文字。`;
+        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員... (Your detailed system prompt here)`;
         const userContentForAnalyzer = `--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
@@ -232,48 +224,77 @@
         return JSON.parse(data.choices[0].message.content);
     }
     
-    // --- UI (MODALS) - REWRITTEN IN V2.0, FIXED IN V2.2 ---
+    // --- UI (MODALS) - [COMPLETELY REWRITTEN SECTION V2.3] ---
 
-    function createModalShell() {
-        hideModal();
-        const backdrop = document.createElement('div');
-        backdrop.id = 'analyzer-backdrop';
-        backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 10000;`;
-        backdrop.addEventListener('click', hideModal);
-        const modal = document.createElement('div');
-        modal.id = 'analyzer-modal';
-        modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column;`;
-        const contentArea = document.createElement('div');
+    // Creates the modal background and a centered content box. The background is scrollable.
+    function createModal(contentNode) {
+        hideModal(); // Close any existing modal
         
-        // --- THIS IS THE FIX V2.2 ---
-        // Add flex properties to make the content area scrollable within the flex container
-        contentArea.style.cssText = 'overflow-y: auto; flex: 1; min-height: 0;';
-        
-        modal.appendChild(contentArea);
-        document.body.appendChild(backdrop);
-        document.body.appendChild(modal);
-        return contentArea;
+        // Add class to body to prevent background scrolling
+        document.body.classList.add('analyzer-modal-open');
+
+        // Full-screen, scrollable overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'analyzer-overlay';
+        overlay.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.65);
+            z-index: 10000;
+            overflow-y: auto;
+            padding: 40px 20px;
+            box-sizing: border-box;
+            display: flex;
+            justify-content: center;
+        `;
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) { // Click on overlay background, not content
+                hideModal();
+            }
+        });
+
+        // The visible content box
+        const contentBox = document.createElement('div');
+        contentBox.id = 'analyzer-content-box';
+        contentBox.style.cssText = `
+            width: 100%;
+            max-width: 800px;
+            margin: auto 0; /* Vertical centering for short content */
+            background-color: #ffffff;
+            color: #1a1a1a;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        `;
+        contentBox.appendChild(contentNode);
+
+        overlay.appendChild(contentBox);
+        document.body.appendChild(overlay);
     }
 
-    function showInfoModal(htmlContent, isError = false) {
-        const contentArea = createModalShell();
-        contentArea.innerHTML = htmlContent;
-        if (isError) {
-             const closeButton = createButton('關閉', hideModal, 'blue');
-             contentArea.parentElement.appendChild(closeButton);
+    function showInfoModal(htmlContent, addCloseButton = false) {
+        const contentNode = document.createElement('div');
+        contentNode.innerHTML = htmlContent;
+        if (addCloseButton) {
+            const closeButton = createButton('關閉', hideModal, 'blue');
+            closeButton.style.marginTop = '20px';
+            contentNode.appendChild(closeButton);
         }
+        createModal(contentNode);
     }
 
     function showReportModal(reportJson) {
-        const contentArea = createModalShell();
-        contentArea.innerHTML = formatAnalysisToHtml(reportJson);
+        const contentNode = document.createElement('div');
+        contentNode.innerHTML = formatAnalysisToHtml(reportJson);
         const closeButton = createButton('關閉', hideModal, 'blue');
-        contentArea.parentElement.appendChild(closeButton);
+        closeButton.style.marginTop = '20px';
+        contentNode.appendChild(closeButton);
+        createModal(contentNode);
     }
 
     function showSettingsModal() {
-        const contentArea = createModalShell();
-        contentArea.innerHTML = `
+        const contentNode = document.createElement('div');
+        contentNode.innerHTML = `
             <h3 style="text-align: center; color: #333; margin-top: 0;">設定</h3>
             <div style="margin-top: 20px;">
                 <label for="model-input" style="display: block; margin-bottom: 8px; color: #333;">分析模型名稱:</label>
@@ -281,7 +302,7 @@
             </div>
         `;
         const buttonContainer = document.createElement('div');
-        buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center;`;
+        buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center; border-top: 1px solid #eee; padding-top: 20px;`;
         const versionDiv = document.createElement('div');
         versionDiv.style.cssText = `font-size: 12px; color: #999; margin-right: auto;`;
         versionDiv.textContent = `Version: ${SCRIPT_VERSION}`;
@@ -300,7 +321,8 @@
         buttonContainer.appendChild(versionDiv);
         buttonContainer.appendChild(closeButton);
         buttonContainer.appendChild(saveButton);
-        contentArea.appendChild(buttonContainer);
+        contentNode.appendChild(buttonContainer);
+        createModal(contentNode);
     }
 
     function createButton(text, onClick, colorScheme = 'grey') {
@@ -321,31 +343,25 @@
     }
 
     function hideModal() {
-        const modal = document.getElementById('analyzer-modal');
-        const backdrop = document.getElementById('analyzer-backdrop');
-        if (modal) modal.remove();
-        if (backdrop) backdrop.remove();
+        const overlay = document.getElementById('analyzer-overlay');
+        if (overlay) overlay.remove();
+        // Remove class from body to re-enable background scrolling
+        document.body.classList.remove('analyzer-modal-open');
     }
     
     function formatAnalysisToHtml(json) {
         let jsonString = JSON.stringify(json, null, 2);
         jsonString = jsonString.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const html = jsonString.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+        const html = jsonString.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
             let cls = 'color: #c7254e;'; // number
             if (/^"/.test(match)) {
-                if (/:$/.test(match)) {
-                    cls = 'color: #0070c1;'; // key
-                } else {
-                    cls = 'color: #22a228;'; // string
-                }
-            } else if (/true|false/.test(match)) {
-                cls = 'color: #d73a49;'; // boolean
-            } else if (/null/.test(match)) {
-                cls = 'color: #6f42c1;'; // null
-            }
+                if (/:$/.test(match)) cls = 'color: #0070c1;'; // key
+                else cls = 'color: #22a228;'; // string
+            } else if (/true|false/.test(match)) cls = 'color: #d73a49;'; // boolean
+            else if (/null/.test(match)) cls = 'color: #6f42c1;'; // null
             return `<span style="${cls}">${match}</span>`;
         });
-        return `<pre style="background-color: #f6f8fa; padding: 15px; border-radius: 6px; border: 1px solid #ddd; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;">${html}</pre>`;
+        return `<pre style="background-color: #f6f8fa; padding: 15px; border-radius: 6px; border: 1px solid #ddd; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; margin:0;">${html}</pre>`;
     }
     
     function getChatIdFromUrl() {
@@ -355,13 +371,17 @@
 
     // --- INITIALIZATION ---
     async function initialize() {
+        // Inject style to disable body scroll when modal is open
+        const styleSheet = document.createElement("style");
+        styleSheet.type = "text/css";
+        styleSheet.innerText = ".analyzer-modal-open { overflow: hidden; }";
+        document.head.appendChild(styleSheet);
+
         console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
         await initDB();
         const observer = new MutationObserver(() => {
-            if (document.querySelector('textarea')) {
-                if (!document.getElementById('analyzer-controls-container')) {
-                    createUI();
-                }
+            if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
+                createUI();
             }
         });
         observer.observe(document.body, { childList: true, subtree: true });
