@@ -57,35 +57,29 @@
     // --- UI CREATION ---
     function createUI() {
         if (document.getElementById('analyzer-controls-container')) return;
-
         const container = document.createElement('div');
         container.id = 'analyzer-controls-container';
         container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
-        
         const mainButton = document.createElement('button');
         mainButton.id = 'analyzer-main-button';
         mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s;`;
         mainButton.onmouseover = () => mainButton.style.backgroundColor = '#357ABD';
         mainButton.onmouseout = () => mainButton.style.backgroundColor = '#4A90E2';
-
         const reanalyzeButton = document.createElement('button');
         reanalyzeButton.id = 'analyzer-reanalyze-button';
         reanalyzeButton.innerHTML = '🔄';
         reanalyzeButton.title = '重新分析';
         reanalyzeButton.style.cssText = `background-color: #6c757d; color: white; border: none; border-radius: 50%; width: 38px; height: 38px; font-size: 18px; cursor: pointer; display: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;`;
         reanalyzeButton.onclick = () => handleAnalysisRequest(true);
-
         const settingsButton = document.createElement('button');
         settingsButton.innerHTML = '⚙️';
         settingsButton.title = '設定分析模型';
         settingsButton.style.cssText = `background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 50%; width: 38px; height: 38px; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;`;
         settingsButton.onclick = showSettingsModal;
-
         container.appendChild(reanalyzeButton);
         container.appendChild(mainButton);
         container.appendChild(settingsButton);
         document.body.appendChild(container);
-
         updateUIState();
     }
 
@@ -151,7 +145,7 @@
         }
     }
 
-    // --- DATA RETRIEVAL (TypingMind's DB) ---
+    // --- DATA RETRIEVAL (TypingMind's DB) - [FINAL MODIFIED SECTION] ---
     function getTypingMindChatHistory() {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open('keyval-store');
@@ -167,43 +161,58 @@
                 getRequest.onerror = () => reject(new Error('讀取聊天資料時出錯。'));
                 getRequest.onsuccess = () => {
                     const chatData = getRequest.result;
-                    if (chatData && chatData.messages) {
-                        resolve(chatData.messages);
-                    } else {
-                        reject(new Error(`使用金鑰 '${currentChatKey}' 找不到對應的聊天資料。`));
+                    if (!chatData || !chatData.messages) {
+                        return reject(new Error(`使用金鑰 '${currentChatKey}' 找不到對應的聊天資料。`));
                     }
+
+                    // --- NEW LOGIC TO PARSE MULTI-MODEL RESPONSES ---
+                    const allMessages = [];
+                    for (const turn of chatData.messages) {
+                        if (turn.role === 'user') {
+                            // It's a user message, add it directly.
+                            allMessages.push(turn);
+                        } else if (turn.type === 'tm_multi_responses' && turn.responses) {
+                            // It's the special multi-response container.
+                            for (const response of turn.responses) {
+                                if (response.messages && response.model) {
+                                    // Extract messages from each model's response.
+                                    // Inject the parent `model` ID into each message for identification.
+                                    const messagesWithModel = response.messages.map(msg => ({
+                                        ...msg,
+                                        model: response.model 
+                                    }));
+                                    allMessages.push(...messagesWithModel);
+                                }
+                            }
+                        } else if (turn.role === 'assistant') {
+                            // This handles regular, non-multi-model assistant messages.
+                            allMessages.push(turn);
+                        }
+                    }
+                    resolve(allMessages);
                 };
             };
         });
     }
 
-    // --- LLM INTERACTION [MODIFIED SECTION] ---
+    // --- LLM INTERACTION ---
     async function analyzeConversation(apiKey, messages) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
-
-        // Helper function to safely stringify content
         const stringifyContent = (content) => {
             if (content === null || content === undefined) return '';
             if (typeof content === 'string') return content;
-            // If content is an object or array, format it as a JSON string
             return JSON.stringify(content, null, 2);
         };
-
-        // Find the last user message and safely get its content
         const lastUserMsg = messages.filter(m => m.role === 'user').pop();
         const lastUserQuestion = lastUserMsg ? stringifyContent(lastUserMsg.content) : 'No user question found.';
-        
-        // Build the transcript, safely handling all content types
-        const transcript = messages
-            .map(msg => {
-                const contentStr = stringifyContent(msg.content);
-                return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${msg.model ?? 'N/A'})**: ${contentStr}`;
-            })
-            .join('\n\n---\n\n');
-
+        const transcript = messages.map(msg => {
+            const contentStr = stringifyContent(msg.content);
+            // Use the model ID we injected earlier.
+            const modelId = msg.model || 'N/A';
+            return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${modelId})**: ${contentStr}`;
+        }).join('\n\n---\n\n');
         const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。你的最終輸出必須是一個結構完全正確的 JSON 物件，不得包含任何額外的解釋性文字。`;
         const userContentForAnalyzer = `--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
-
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
@@ -213,7 +222,6 @@
                 response_format: { type: "json_object" }
             })
         });
-
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(`API 錯誤 (${model}): ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
@@ -227,19 +235,24 @@
         hideModal();
         const backdrop = document.createElement('div');
         backdrop.id = 'analyzer-backdrop';
-        backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 10000;`;
+        backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10000;`;
         const modal = document.createElement('div');
         modal.id = 'analyzer-modal';
-        modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; overflow-y: auto; background-color: #2c2c2c; color: #f0f0f0; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #444;`;
-        
+        modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; overflow-y: auto; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;`;
         backdrop.addEventListener('click', hideModal);
-        if (typeof content === 'string') modal.innerHTML = content;
-        else modal.innerHTML = formatAnalysisToHtml(content);
-
+        const contentContainer = document.createElement('div');
+        if (typeof content === 'string') {
+            contentContainer.innerHTML = content;
+        } else {
+            contentContainer.innerHTML = formatAnalysisToHtml(content);
+        }
+        modal.appendChild(contentContainer);
         if (isResult) {
             const closeButton = document.createElement('button');
             closeButton.innerText = '關閉';
-            closeButton.style.cssText = `display: block; margin: 25px auto 0; padding: 10px 20px; border-radius: 8px; border: 1px solid #555; cursor: pointer; background-color: #4A90E2; color: white;`;
+            closeButton.style.cssText = `display: block; margin: 25px auto 0; padding: 10px 20px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; background-color: #f0f0f0; color: #333;`;
+            closeButton.onmouseover = () => closeButton.style.backgroundColor = '#e0e0e0';
+            closeButton.onmouseout = () => closeButton.style.backgroundColor = '#f0f0f0';
             closeButton.onclick = hideModal;
             modal.appendChild(closeButton);
         }
@@ -251,10 +264,10 @@
         hideModal();
         const currentModel = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
         const content = `
-            <h3 style="text-align: center; color: #4A90E2;">設定</h3>
+            <h3 style="text-align: center; color: #333;">設定</h3>
             <div style="margin-top: 20px;">
-                <label for="model-input" style="display: block; margin-bottom: 8px;">分析模型名稱:</label>
-                <input type="text" id="model-input" value="${currentModel}" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background-color: #333; color: #f0f0f0;">
+                <label for="model-input" style="display: block; margin-bottom: 8px; color: #333;">分析模型名稱:</label>
+                <input type="text" id="model-input" value="${currentModel}" style="width: 100%; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333;">
             </div>`;
         const modal = document.createElement('div');
         modal.innerHTML = content;
@@ -272,7 +285,7 @@
             }
         };
         modal.appendChild(saveButton);
-        showModal(modal.innerHTML);
+        showModal(modal.innerHTML, true);
     }
 
     function hideModal() {
@@ -281,17 +294,31 @@
         if (modal) modal.remove();
         if (backdrop) backdrop.remove();
     }
-
+    
     function formatAnalysisToHtml(json) {
-        return `<pre style="white-space: pre-wrap; word-wrap: break-word; font-size: 14px;">${JSON.stringify(json, null, 2)}</pre>`;
+        let jsonString = JSON.stringify(json, null, 2);
+        jsonString = jsonString.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const html = jsonString.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+            let cls = 'color: #c7254e;'; // number
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'color: #0070c1;'; // key
+                } else {
+                    cls = 'color: #22a228;'; // string
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'color: #d73a49;'; // boolean
+            } else if (/null/.test(match)) {
+                cls = 'color: #6f42c1;'; // null
+            }
+            return `<span style="${cls}">${match}</span>`;
+        });
+        return `<pre style="background-color: #f6f8fa; padding: 15px; border-radius: 6px; border: 1px solid #ddd; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;">${html}</pre>`;
     }
     
     function getChatIdFromUrl() {
         const hash = window.location.hash;
-        if (hash && hash.startsWith('#chat=')) {
-            return hash.substring('#chat='.length);
-        }
-        return null;
+        return (hash && hash.startsWith('#chat=')) ? hash.substring('#chat='.length) : null;
     }
 
     // --- INITIALIZATION ---
