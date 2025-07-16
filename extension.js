@@ -84,29 +84,32 @@
     // --- DATA RETRIEVAL (INDEXEDDB) ---
     function getChatHistory() {
         return new Promise((resolve, reject) => {
-            const dbName = `typingmind-app-${window.location.host}`;
-            const request = indexedDB.open(dbName);
+            // --- 修正後的資料庫名稱 ---
+            const dbName = 'localforage'; // TypingMind V2 uses 'localforage'
+            const request = indexedDB.open(dbName, 2); // Version might be 2
+            // --- 邏輯修正結束 ---
 
             request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫。'));
             
             request.onsuccess = (event) => {
                 const db = event.target.result;
                 
-                // --- 修正後的網址讀取邏輯 ---
-                const hash = window.location.hash; // 取得網址中 '#' 後面的部分
+                const hash = window.location.hash;
                 if (!hash ||!hash.startsWith('#chat=')) {
                     return reject(new Error('無法從 URL 中確定當前對話 ID。請先進入一個對話。'));
                 }
-                const chatId = hash.substring('#chat='.length); // 移除 '#chat=' 以取得 ID
+                const chatId = hash.substring('#chat='.length);
                 const currentChatKey = `CHAT_${chatId}`;
-                // --- 邏輯修正結束 ---
 
-                if (!db.objectStoreNames.contains('chats')) {
-                    return reject(new Error("在資料庫中找不到 'chats' 物件儲存區。"));
+                // --- 修正後的 Object Store 名稱 ---
+                const storeName = 'keyvaluepairs';
+                if (!db.objectStoreNames.contains(storeName)) {
+                    return reject(new Error(`在資料庫中找不到 '${storeName}' 物件儲存區。`));
                 }
-
-                const transaction = db.transaction(['chats'], 'readonly');
-                const objectStore = transaction.objectStore('chats');
+                const transaction = db.transaction([storeName], 'readonly');
+                const objectStore = transaction.objectStore(storeName);
+                // --- 邏輯修正結束 ---
+                
                 const getRequest = objectStore.get(currentChatKey);
 
                 getRequest.onerror = () => reject(new Error('讀取聊天資料時出錯。'));
