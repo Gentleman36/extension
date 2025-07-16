@@ -143,7 +143,6 @@
             return;
         }
 
-        // If a report exists and it's not a re-analysis request, just view it.
         if (!isReanalysis) {
             const existingReport = await getReport(chatId);
             if (existingReport) {
@@ -153,18 +152,13 @@
         }
 
         try {
-            // 1. Get API Key
             let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
             if (!apiKey) {
                 apiKey = window.prompt('請輸入您的 OpenAI API 金鑰：');
-                if (!apiKey) {
-                    alert('未提供 API 金鑰，分析已取消。');
-                    return;
-                }
+                if (!apiKey) return;
                 localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
             }
 
-            // 2. Get Chat History from IndexedDB
             showModal('讀取對話紀錄中...');
             const messages = await getTypingMindChatHistory();
             if (messages.length < 2) {
@@ -173,17 +167,11 @@
                 return;
             }
 
-            // 3. Prepare data and call analyzer LLM
             showModal('分析中，請稍候...');
             const analysisJson = await analyzeConversation(apiKey, messages);
             
-            // 4. Save the new report
             await saveReport(chatId, analysisJson);
-
-            // 5. Display result
             showModal(formatAnalysisToHtml(analysisJson), true);
-
-            // 6. Update UI to reflect new state
             updateUIState();
 
         } catch (error) {
@@ -229,15 +217,21 @@
     async function analyzeConversation(apiKey, messages) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
         const lastUserQuestion = messages.filter(m => m.role === 'user').pop()?.content ?? 'No user question found.';
-        const transcript = messages.map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model ?? 'N/A'})**: ${msg.content}`).join('\n\n---\n\n');
-        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員... (Your detailed system prompt here)`; // Keeping it short for brevity
+        
+        // --- THIS IS THE FIX ---
+        const transcript = messages
+            .map(msg => `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${msg.model ?? 'N/A'})**: ${msg.content}`)
+            .join('\n\n---\n\n');
+        // --- END OF FIX ---
+
+        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。你的最終輸出必須是一個結構完全正確的 JSON 物件，不得包含任何額外的解釋性文字。`;
         const userContentForAnalyzer = `--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
 
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
             body: JSON.stringify({
-                model: model, // Use the configured model
+                model: model,
                 messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }],
                 response_format: { type: "json_object" }
             })
@@ -253,7 +247,7 @@
 
     // --- UI (MODALS) ---
     function showModal(content, isResult = false) {
-        hideModal(); // Remove any existing modal first
+        hideModal();
         const backdrop = document.createElement('div');
         backdrop.id = 'analyzer-backdrop';
         backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 10000;`;
@@ -294,9 +288,13 @@
         saveButton.style.cssText = `display: block; margin: 20px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #28a745; color: white;`;
         saveButton.onclick = () => {
             const newModel = document.getElementById('model-input').value;
-            localStorage.setItem(MODEL_STORAGE_KEY, newModel);
-            hideModal();
-            alert(`模型已更新為: ${newModel}`);
+            if (newModel) {
+                localStorage.setItem(MODEL_STORAGE_KEY, newModel);
+                hideModal();
+                alert(`模型已更新為: ${newModel}`);
+            } else {
+                alert('模型名稱不可為空！');
+            }
         };
         modal.appendChild(saveButton);
         showModal(modal.innerHTML);
@@ -310,12 +308,9 @@
     }
 
     function formatAnalysisToHtml(json) {
-        // Your existing formatting function here, or a new improved one.
-        // This is a placeholder for your detailed formatting logic.
-        return `<pre>${JSON.stringify(json, null, 2)}</pre>`;
+        return `<pre style="white-space: pre-wrap; word-wrap: break-word;">${JSON.stringify(json, null, 2)}</pre>`;
     }
     
-    // --- UTILITY ---
     function getChatIdFromUrl() {
         const hash = window.location.hash;
         if (hash && hash.startsWith('#chat=')) {
@@ -328,17 +323,16 @@
     async function initialize() {
         await initDB();
         
-        // Use MutationObserver to detect when the main UI is ready
         const observer = new MutationObserver(() => {
             if (document.querySelector('textarea')) {
-                createUI();
-                observer.disconnect(); // We found the main UI, stop this observer
+                if (!document.getElementById('analyzer-controls-container')) {
+                    createUI();
+                }
             }
         });
         observer.observe(document.body, { childList: true, subtree: true });
 
-        // Listen for URL changes to update the button state
-        window.addEventListener('hashchange', updateUIState);
+        window.addEventListener('hashchange', updateUIState, false);
     }
 
     initialize();
