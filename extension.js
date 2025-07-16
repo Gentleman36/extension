@@ -130,8 +130,8 @@
         const lastUserQuestion = messages.filter(m => m.role === 'user').pop()?.content?? 'No user question found.';
         
         const transcript = messages
-        .map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model?? 'N/A'})**: ${msg.content}`)
-        .join('\n\n---\n\n');
+       .map(msg => `**${msg.role.toUpperCase()} (Model: ${msg.model?? 'N/A'})**: ${msg.content}`)
+       .join('\n\n---\n\n');
 
         const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據，並以結構化的 JSON 格式輸出。
 
