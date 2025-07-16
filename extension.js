@@ -1,8 +1,19 @@
+// ==UserScript==
+// @name         TypingMind 對話分析器
+// @namespace    http://tampermonkey.net/
+// @version      2.1
+// @description  分析 TypingMind 對話中不同模型的回應，並提供設定介面與報告儲存功能。
+// @author       Gemini
+// @match        https://www.typingmind.com/*
+// @grant        none
+// ==/UserScript==
+
 // IIFE (Immediately Invoked Function Expression) to avoid polluting the global scope
 (function() {
     'use strict';
 
     // --- CONFIGURATION ---
+    const SCRIPT_VERSION = '2.1'; // Script version constant
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o-mini';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
@@ -97,7 +108,7 @@
         const existingReport = await getReport(chatId);
         if (existingReport) {
             mainButton.innerHTML = '📄 查看報告';
-            mainButton.onclick = () => showModal(formatAnalysisToHtml(existingReport.report), true);
+            mainButton.onclick = () => showReportModal(existingReport.report);
             reanalyzeButton.style.display = 'inline-block';
         } else {
             mainButton.innerHTML = '🤖 分析對話';
@@ -116,7 +127,7 @@
         if (!isReanalysis) {
             const existingReport = await getReport(chatId);
             if (existingReport) {
-                showModal(formatAnalysisToHtml(existingReport.report), true);
+                showReportModal(existingReport.report);
                 return;
             }
         }
@@ -127,21 +138,23 @@
                 if (!apiKey) return;
                 localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
             }
-            showModal('讀取對話紀錄中...');
+            showInfoModal('讀取對話紀錄中...');
             const messages = await getTypingMindChatHistory();
             if (messages.length < 2) {
                 hideModal();
                 alert('當前對話訊息不足，無法進行分析。');
                 return;
             }
-            showModal('分析中，請稍候...');
+            showInfoModal('分析中，請稍候...');
             const analysisJson = await analyzeConversation(apiKey, messages);
             await saveReport(chatId, analysisJson);
-            showModal(formatAnalysisToHtml(analysisJson), true);
+            hideModal();
+            showReportModal(analysisJson);
             updateUIState();
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
-            showModal(`<h3>發生錯誤</h3><pre style="white-space: pre-wrap; word-wrap: break-word;">${error.message}</pre>`, true);
+            hideModal();
+            showInfoModal(`<h3>發生錯誤</h3><pre style="white-space: pre-wrap; word-wrap: break-word;">${error.message}</pre>`, true);
         }
     }
 
@@ -218,59 +231,64 @@
         const data = await response.json();
         return JSON.parse(data.choices[0].message.content);
     }
+    
+    // --- UI (MODALS) - REWRITTEN IN V2.0 ---
 
-    // --- UI (MODALS) - [REFACTORED SECTION] ---
-    function showModal(content, showCloseButton = false) {
-        hideModal(); // Ensure no modal is open
+    function createModalShell() {
+        hideModal();
         const backdrop = document.createElement('div');
         backdrop.id = 'analyzer-backdrop';
-        backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 10000;`;
+        backdrop.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); z-index: 10000;`;
+        backdrop.addEventListener('click', hideModal);
         const modal = document.createElement('div');
         modal.id = 'analyzer-modal';
-        modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; overflow-y: auto; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;`;
-        backdrop.addEventListener('click', hideModal);
-
-        // Accept either an HTML string or a DOM Node
-        if (typeof content === 'string') {
-            modal.innerHTML = content;
-        } else if (content instanceof Node) {
-            modal.appendChild(content);
-        }
-
-        if (showCloseButton) {
-            const closeButton = document.createElement('button');
-            closeButton.innerText = '關閉';
-            // New, higher-contrast button style
-            closeButton.style.cssText = `display: block; margin: 25px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #6c757d; color: white; font-size: 14px; transition: background-color 0.2s;`;
-            closeButton.onmouseover = () => closeButton.style.backgroundColor = '#5a6268';
-            closeButton.onmouseout = () => closeButton.style.backgroundColor = '#6c757d';
-            closeButton.onclick = hideModal;
-            modal.appendChild(closeButton);
-        }
+        modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 800px; max-height: 85vh; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); border: 1px solid #ddd; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column;`;
+        const contentArea = document.createElement('div');
+        contentArea.style.overflowY = 'auto';
+        modal.appendChild(contentArea);
         document.body.appendChild(backdrop);
         document.body.appendChild(modal);
+        return contentArea;
     }
 
+    function showInfoModal(htmlContent, isError = false) {
+        const contentArea = createModalShell();
+        contentArea.innerHTML = htmlContent;
+        if (isError) {
+             const closeButton = createButton('關閉', hideModal, 'blue');
+             contentArea.parentElement.appendChild(closeButton);
+        }
+    }
+
+    function showReportModal(reportJson) {
+        const contentArea = createModalShell();
+        contentArea.innerHTML = formatAnalysisToHtml(reportJson);
+        const closeButton = createButton('關閉', hideModal, 'blue');
+        contentArea.parentElement.appendChild(closeButton);
+    }
+
+    // --- [MODIFIED SECTION V2.1] ---
     function showSettingsModal() {
-        // Create a container element for the settings content
-        const settingsContent = document.createElement('div');
+        const contentArea = createModalShell();
         
         // Use innerHTML for the static parts
-        settingsContent.innerHTML = `
-            <h3 style="text-align: center; color: #333;">設定</h3>
+        contentArea.innerHTML = `
+            <h3 style="text-align: center; color: #333; margin-top: 0;">設定</h3>
             <div style="margin-top: 20px;">
                 <label for="model-input" style="display: block; margin-bottom: 8px; color: #333;">分析模型名稱:</label>
-                <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 8px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333;">
+                <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333; font-size: 14px;">
             </div>
         `;
+        
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center;`;
 
-        // Create the Save button as a DOM element and attach the event listener
-        const saveButton = document.createElement('button');
-        saveButton.innerText = '儲存';
-        saveButton.style.cssText = `display: block; margin: 20px auto 0; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background-color: #28a745; color: white; font-size: 14px; transition: background-color 0.2s;`;
-        saveButton.onmouseover = () => saveButton.style.backgroundColor = '#218838';
-        saveButton.onmouseout = () => saveButton.style.backgroundColor = '#28a745';
-        saveButton.onclick = () => {
+        // Add the version display
+        const versionDiv = document.createElement('div');
+        versionDiv.style.cssText = `font-size: 12px; color: #999; margin-right: auto;`;
+        versionDiv.textContent = `Version: ${SCRIPT_VERSION}`;
+        
+        const saveHandler = () => {
             const newModel = document.getElementById('model-input').value;
             if (newModel) {
                 localStorage.setItem(MODEL_STORAGE_KEY, newModel);
@@ -280,12 +298,31 @@
                 alert('模型名稱不可為空！');
             }
         };
+        
+        const saveButton = createButton('儲存', saveHandler, 'green');
+        const closeButton = createButton('取消', hideModal, 'grey');
+        
+        buttonContainer.appendChild(versionDiv); // Add version to the left
+        buttonContainer.appendChild(closeButton);
+        buttonContainer.appendChild(saveButton);
+        contentArea.appendChild(buttonContainer);
+    }
 
-        // Append the interactive button to the container
-        settingsContent.appendChild(saveButton);
-
-        // Pass the entire container element to showModal
-        showModal(settingsContent, true);
+    function createButton(text, onClick, colorScheme = 'grey') {
+        const button = document.createElement('button');
+        button.innerText = text;
+        const styles = {
+            grey: { bg: '#6c757d', hover: '#5a6268' },
+            blue: { bg: '#007bff', hover: '#0069d9' },
+            green: { bg: '#28a745', hover: '#218838' }
+        };
+        const style = styles[colorScheme] || styles.grey;
+        button.style.cssText = `padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; color: white; font-size: 14px; font-weight: 500; transition: background-color 0.2s;`;
+        button.style.backgroundColor = style.bg;
+        button.onmouseover = () => button.style.backgroundColor = style.hover;
+        button.onmouseout = () => button.style.backgroundColor = style.bg;
+        button.onclick = onClick;
+        return button;
     }
 
     function hideModal() {
@@ -323,6 +360,7 @@
 
     // --- INITIALIZATION ---
     async function initialize() {
+        console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
         await initDB();
         const observer = new MutationObserver(() => {
             if (document.querySelector('textarea')) {
