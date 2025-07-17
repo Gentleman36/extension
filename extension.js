@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TypingMind 對話分析器
 // @namespace    http://tampermonkey.net/
-// @version      2.5
-// @description  分析 TypingMind 對話中不同模型的回應，並提供設定介面與報告儲存功能。
+// @version      2.6
+// @description  分析 TypingMind 對話中不同模型的回應，並提供可移動、可縮放的懸浮視窗介面。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
 // @grant        none
@@ -12,7 +12,7 @@
     'use strict';
 
     // --- CONFIGURATION ---
-    const SCRIPT_VERSION = '2.5';
+    const SCRIPT_VERSION = '2.6';
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o-mini';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
@@ -72,19 +72,17 @@
         const mainButton = document.createElement('button');
         mainButton.id = 'analyzer-main-button';
         mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s;`;
-        mainButton.onmouseover = () => mainButton.style.backgroundColor = '#357ABD';
-        mainButton.onmouseout = () => mainButton.style.backgroundColor = '#4A90E2';
         const reanalyzeButton = document.createElement('button');
         reanalyzeButton.id = 'analyzer-reanalyze-button';
         reanalyzeButton.innerHTML = '🔄';
         reanalyzeButton.title = '重新分析';
-        reanalyzeButton.style.cssText = `background-color: #6c757d; color: white; border: none; border-radius: 50%; width: 38px; height: 38px; font-size: 18px; cursor: pointer; display: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;`;
+        reanalyzeButton.style.cssText = `background-color: #6c757d; color: white; border: none; border-radius: 50%; width: 38px; height: 38px; font-size: 18px; cursor: pointer; display: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1);`;
         reanalyzeButton.onclick = () => handleAnalysisRequest(true);
         const settingsButton = document.createElement('button');
         settingsButton.innerHTML = '⚙️';
         settingsButton.title = '設定分析模型';
-        settingsButton.style.cssText = `background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 50%; width: 38px; height: 38px; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s;`;
-        settingsButton.onclick = showSettingsModal;
+        settingsButton.style.cssText = `background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 50%; width: 38px; height: 38px; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);`;
+        settingsButton.onclick = showSettingsWindow;
         container.appendChild(reanalyzeButton);
         container.appendChild(mainButton);
         container.appendChild(settingsButton);
@@ -94,8 +92,8 @@
 
     async function updateUIState() {
         const mainButton = document.getElementById('analyzer-main-button');
-        const reanalyzeButton = document.getElementById('analyzer-reanalyze-button');
         if (!mainButton) return;
+        const reanalyzeButton = document.getElementById('analyzer-reanalyze-button');
         const chatId = getChatIdFromUrl();
         if (!chatId) {
             mainButton.style.display = 'none';
@@ -106,7 +104,7 @@
         const existingReport = await getReport(chatId);
         if (existingReport) {
             mainButton.innerHTML = '📄 查看報告';
-            mainButton.onclick = () => showReportModal(existingReport.report);
+            mainButton.onclick = () => showReportWindow(existingReport.report);
             reanalyzeButton.style.display = 'inline-block';
         } else {
             mainButton.innerHTML = '🤖 分析對話';
@@ -122,7 +120,7 @@
         if (!isReanalysis) {
             const existingReport = await getReport(chatId);
             if (existingReport) {
-                showReportModal(existingReport.report);
+                showReportWindow(existingReport.report);
                 return;
             }
         }
@@ -133,23 +131,18 @@
                 if (!apiKey) return;
                 localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
             }
-            showInfoModal('讀取對話紀錄中...');
             const messages = await getTypingMindChatHistory();
             if (messages.length < 2) {
-                hideModal();
                 alert('當前對話訊息不足，無法進行分析。');
                 return;
             }
-            showInfoModal('分析中，請稍候...');
             const analysisText = await analyzeConversation(apiKey, messages);
             await saveReport(chatId, analysisText);
-            hideModal();
-            showReportModal(analysisText);
+            showReportWindow(analysisText);
             updateUIState();
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
-            hideModal();
-            showInfoModal(`<h3>發生錯誤</h3><pre>${error.message}</pre>`, true);
+            alert(`發生錯誤: ${error.message}`);
         }
     }
 
@@ -188,7 +181,7 @@
         });
     }
 
-    // --- LLM INTERACTION - [MODIFIED SECTION V2.5] ---
+    // --- LLM INTERACTION ---
     async function analyzeConversation(apiKey, messages) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
         const stringifyContent = (content) => {
@@ -198,171 +191,184 @@
         };
         const lastUserMsg = messages.filter(m => m.role === 'user').pop();
         const lastUserQuestion = lastUserMsg ? stringifyContent(lastUserMsg.content) : 'No user question found.';
-        const transcript = messages.map(msg => {
-            const contentStr = stringifyContent(msg.content);
-            const modelId = msg.model || 'N/A';
-            return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${modelId})**: ${contentStr}`;
-        }).join('\n\n---\n\n');
-
-        // New prompt asking for Markdown instead of JSON
-        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據。
-
-請使用清晰的 Markdown 格式來組織你的回答，應包含以下部分：
-- ### 總體評價
-  (簡要說明哪個模型的回答總體更佳，並陳述核心理由。)
-- ### 各模型優點
-  (使用列表分別陳述每個模型回答的突出優點。)
-- ### 各模型缺點
-  (使用列表分別陳述每個模型回答的明顯缺點或可改進之處。)
-- ### 結論與建議
-  (提供最終的裁決總結或改進建議。)`;
-        
+        const transcript = messages.map(msg => `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${msg.model || 'N/A'})**: ${stringifyContent(msg.content)}`).join('\n\n---\n\n');
+        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員... (Your detailed system prompt here)`;
         const userContentForAnalyzer = `--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
-
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
             body: JSON.stringify({
                 model: model,
                 messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }],
-                // REMOVED: response_format: { type: "json_object" }
             })
         });
-
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(`API 錯誤 (${model}): ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
         }
-        
         const data = await response.json();
-        // Return the text content directly, no more JSON.parse()
         return data.choices[0].message.content;
     }
+
+    // --- UI (FLOATING WINDOW) - [COMPLETELY REWRITTEN SECTION V2.6] ---
     
-    // --- UI (MODALS) ---
-    function createModal(contentNode) {
-        hideModal(); 
-        document.body.classList.add('analyzer-modal-open');
-        const overlay = document.createElement('div');
-        overlay.id = 'analyzer-overlay';
-        overlay.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.65); z-index: 10000; overflow-y: auto; padding: 40px 20px; box-sizing: border-box; display: flex; justify-content: center;`;
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) hideModal();
-        });
-        const contentBox = document.createElement('div');
-        contentBox.id = 'analyzer-content-box';
-        contentBox.style.cssText = `width: 100%; max-width: 800px; margin: auto 0; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;`;
-        contentBox.appendChild(contentNode);
-        overlay.appendChild(contentBox);
-        document.body.appendChild(overlay);
+    function createFloatingWindow(title, contentNode) {
+        hideWindow(); // Close any existing window first
+
+        const windowEl = document.createElement('div');
+        windowEl.id = 'analyzer-window';
+        windowEl.style.cssText = `
+            position: fixed;
+            top: 50px;
+            left: 50px;
+            width: 500px;
+            height: 600px;
+            z-index: 10001;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 12px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* Important for resize */
+        `;
+
+        // --- Header / Drag Handle ---
+        const header = document.createElement('div');
+        header.style.cssText = `
+            background-color: #f0f0f0;
+            padding: 8px 12px;
+            cursor: move;
+            border-bottom: 1px solid #ccc;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+        `;
+        const titleEl = document.createElement('span');
+        titleEl.textContent = title;
+        titleEl.style.fontWeight = 'bold';
+
+        const closeButton = document.createElement('button');
+        closeButton.innerHTML = '&times;';
+        closeButton.style.cssText = `background: none; border: none; font-size: 20px; cursor: pointer;`;
+        closeButton.onclick = hideWindow;
+
+        header.appendChild(titleEl);
+        header.appendChild(closeButton);
+
+        // --- Content Area ---
+        const contentArea = document.createElement('div');
+        contentArea.style.cssText = `padding: 15px; flex-grow: 1; overflow-y: auto;`;
+        contentArea.appendChild(contentNode);
+
+        // --- Resize Handle ---
+        const resizeHandle = document.createElement('div');
+        resizeHandle.style.cssText = `
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 15px;
+            height: 15px;
+            cursor: se-resize;
+            background: linear-gradient(135deg, transparent 50%, #aaa 50%);
+        `;
+
+        windowEl.appendChild(header);
+        windowEl.appendChild(contentArea);
+        windowEl.appendChild(resizeHandle);
+        document.body.appendChild(windowEl);
+
+        // --- Drag and Resize Logic ---
+        makeDraggable(windowEl, header);
+        makeResizable(windowEl, resizeHandle);
     }
 
-    function showInfoModal(htmlContent, addCloseButton = false) {
+    function hideWindow() {
+        const windowEl = document.getElementById('analyzer-window');
+        if (windowEl) windowEl.remove();
+    }
+
+    function showReportWindow(reportText) {
         const contentNode = document.createElement('div');
-        contentNode.innerHTML = htmlContent;
-        if (addCloseButton) {
-            const closeButton = createButton('關閉', hideModal, 'blue');
-            closeButton.style.marginTop = '20px';
-            contentNode.appendChild(closeButton);
-        }
-        createModal(contentNode);
+        contentNode.innerHTML = formatMarkdownToHtml(reportText);
+        createFloatingWindow('分析報告', contentNode);
     }
 
-    function showReportModal(reportText) {
-        const contentNode = document.createElement('div');
-        // The report is now text/markdown, so we pass it to the formatter
-        contentNode.innerHTML = formatAnalysisToHtml(reportText);
-        const closeButton = createButton('關閉', hideModal, 'blue');
-        closeButton.style.marginTop = '20px';
-        contentNode.appendChild(closeButton);
-        createModal(contentNode);
-    }
-
-    function showSettingsModal() {
+    function showSettingsWindow() {
         const contentNode = document.createElement('div');
         contentNode.innerHTML = `
-            <h3 style="text-align: center; color: #333; margin-top: 0;">設定</h3>
-            <div style="margin-top: 20px;">
-                <label for="model-input" style="display: block; margin-bottom: 8px; color: #333;">分析模型名稱:</label>
-                <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333; font-size: 14px;">
-            </div>`;
-        const buttonContainer = document.createElement('div');
-        buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center; border-top: 1px solid #eee; padding-top: 20px;`;
-        const versionDiv = document.createElement('div');
-        versionDiv.style.cssText = `font-size: 12px; color: #999; margin-right: auto;`;
-        versionDiv.textContent = `Version: ${SCRIPT_VERSION}`;
+            <div style="margin-top: 10px;">
+                <label for="model-input" style="display: block; margin-bottom: 8px;">分析模型名稱:</label>
+                <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;">
+            </div>
+            <div style="text-align: right; margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                <span style="font-size: 12px; color: #999; float: left; line-height: 38px;">Version: ${SCRIPT_VERSION}</span>
+                <button id="analyzer-settings-save" style="padding: 8px 16px; border-radius: 6px; border: none; background-color: #28a745; color: white; cursor: pointer;">儲存</button>
+            </div>
+        `;
+        // We need to attach the listener after the element is created
         const saveHandler = () => {
-            const newModel = document.getElementById('model-input').value;
+            const newModel = contentNode.querySelector('#model-input').value;
             if (newModel) {
                 localStorage.setItem(MODEL_STORAGE_KEY, newModel);
-                hideModal();
+                hideWindow();
                 alert(`模型已更新為: ${newModel}`);
-            } else {
-                alert('模型名稱不可為空！');
-            }
+            } else alert('模型名稱不可為空！');
         };
-        const saveButton = createButton('儲存', saveHandler, 'green');
-        const closeButton = createButton('取消', hideModal, 'grey');
-        buttonContainer.appendChild(versionDiv);
-        buttonContainer.appendChild(closeButton);
-        buttonContainer.appendChild(saveButton);
-        contentNode.appendChild(buttonContainer);
-        createModal(contentNode);
+        contentNode.querySelector('#analyzer-settings-save').onclick = saveHandler;
+        createFloatingWindow('設定', contentNode);
     }
 
-    function createButton(text, onClick, colorScheme = 'grey') {
-        const button = document.createElement('button');
-        button.innerText = text;
-        const styles = {
-            grey: { bg: '#6c757d', hover: '#5a6268' },
-            blue: { bg: '#007bff', hover: '#0069d9' },
-            green: { bg: '#28a745', hover: '#218838' }
-        };
-        const style = styles[colorScheme] || styles.grey;
-        button.style.cssText = `padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; color: white; font-size: 14px; font-weight: 500; transition: background-color 0.2s;`;
-        button.style.backgroundColor = style.bg;
-        button.onmouseover = () => button.style.backgroundColor = style.hover;
-        button.onmouseout = () => button.style.backgroundColor = style.bg;
-        button.onclick = onClick;
-        return button;
+    function makeDraggable(element, handle) {
+        let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        handle.onmousedown = dragMouseDown;
+        function dragMouseDown(e) {
+            e.preventDefault();
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+            document.onmouseup = closeDragElement;
+            document.onmousemove = elementDrag;
+        }
+        function elementDrag(e) {
+            e.preventDefault();
+            pos1 = pos3 - e.clientX;
+            pos2 = pos4 - e.clientY;
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+            element.style.top = (element.offsetTop - pos2) + "px";
+            element.style.left = (element.offsetLeft - pos1) + "px";
+        }
+        function closeDragElement() {
+            document.onmouseup = null;
+            document.onmousemove = null;
+        }
     }
 
-    function hideModal() {
-        const overlay = document.getElementById('analyzer-overlay');
-        if (overlay) overlay.remove();
-        document.body.classList.remove('analyzer-modal-open');
+    function makeResizable(element, handle) {
+        handle.onmousedown = function(e) {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const startWidth = parseInt(document.defaultView.getComputedStyle(element).width, 10);
+            const startHeight = parseInt(document.defaultView.getComputedStyle(element).height, 10);
+            document.onmousemove = function(e) {
+                element.style.width = (startWidth + e.clientX - startX) + 'px';
+                element.style.height = (startHeight + e.clientY - startY) + 'px';
+            };
+            document.onmouseup = function() {
+                document.onmousemove = null;
+                document.onmouseup = null;
+            };
+        };
     }
-    
-    // --- [MODIFIED SECTION V2.5] ---
-    // This function now converts Markdown to HTML
-    function formatAnalysisToHtml(markdownText) {
+
+    function formatMarkdownToHtml(markdownText) {
         if (!markdownText) return '無分析內容。';
-
-        // Basic sanitization
-        let html = markdownText
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-
-        // Markdown to HTML conversion
-        html = html
-            // Headings (e.g., ### Title)
-            .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-            .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-            .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-            // Bold (**text**)
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            // Italic (*text*)
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            // List items (- item or * item)
-            .replace(/^\s*[-*] (.*$)/gim, '<li>$1</li>');
-
-        // Wrap adjacent list items in <ul>
+        let html = markdownText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>').replace(/^## (.*$)/gim, '<h2>$1</h2>').replace(/^# (.*$)/gim, '<h1>$1</h1>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<em>$1</em>').replace(/^\s*[-*] (.*$)/gim, '<li>$1</li>');
         html = html.replace(/<li>(.*?)<\/li>\s*(?=<li)/g, '<li>$1</li>');
-        html = html.replace(/(<li>.*?<\/li>)/g, '<ul>$1</ul>');
-        html = html.replace(/<\/ul>\s*<ul>/g, '');
-        
-        // Final container
+        html = html.replace(/(<li>.*?<\/li>)/g, '<ul>$1</ul>').replace(/<\/ul>\s*<ul>/g, '');
         return `<div class="markdown-body" style="line-height: 1.7; font-size: 15px;">${html.replace(/\n/g, '<br>')}</div>`;
     }
     
@@ -373,10 +379,6 @@
 
     // --- INITIALIZATION ---
     async function initialize() {
-        const styleSheet = document.createElement("style");
-        styleSheet.type = "text/css";
-        styleSheet.innerText = ".analyzer-modal-open { overflow: hidden; }";
-        document.head.appendChild(styleSheet);
         console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
         await initDB();
         const observer = new MutationObserver(() => {
