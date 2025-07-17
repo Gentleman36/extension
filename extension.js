@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TypingMind 對話分析器
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.5
 // @description  分析 TypingMind 對話中不同模型的回應，並提供設定介面與報告儲存功能。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
@@ -12,7 +12,7 @@
     'use strict';
 
     // --- CONFIGURATION ---
-    const SCRIPT_VERSION = '2.3';
+    const SCRIPT_VERSION = '2.5';
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o-mini';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
@@ -141,10 +141,10 @@
                 return;
             }
             showInfoModal('分析中，請稍候...');
-            const analysisJson = await analyzeConversation(apiKey, messages);
-            await saveReport(chatId, analysisJson);
+            const analysisText = await analyzeConversation(apiKey, messages);
+            await saveReport(chatId, analysisText);
             hideModal();
-            showReportModal(analysisJson);
+            showReportModal(analysisText);
             updateUIState();
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
@@ -169,9 +169,7 @@
                 getRequest.onerror = () => reject(new Error('讀取聊天資料出錯。'));
                 getRequest.onsuccess = () => {
                     const chatData = getRequest.result;
-                    if (!chatData || !chatData.messages) {
-                        return reject(new Error(`找不到對應的聊天資料。`));
-                    }
+                    if (!chatData || !chatData.messages) return reject(new Error(`找不到對應的聊天資料。`));
                     const allMessages = [];
                     for (const turn of chatData.messages) {
                         if (turn.role === 'user') allMessages.push(turn);
@@ -190,7 +188,7 @@
         });
     }
 
-    // --- LLM INTERACTION ---
+    // --- LLM INTERACTION - [MODIFIED SECTION V2.5] ---
     async function analyzeConversation(apiKey, messages) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
         const stringifyContent = (content) => {
@@ -205,69 +203,56 @@
             const modelId = msg.model || 'N/A';
             return `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${modelId})**: ${contentStr}`;
         }).join('\n\n---\n\n');
-        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員... (Your detailed system prompt here)`;
+
+        // New prompt asking for Markdown instead of JSON
+        const systemPrompt = `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據。
+
+請使用清晰的 Markdown 格式來組織你的回答，應包含以下部分：
+- ### 總體評價
+  (簡要說明哪個模型的回答總體更佳，並陳述核心理由。)
+- ### 各模型優點
+  (使用列表分別陳述每個模型回答的突出優點。)
+- ### 各模型缺點
+  (使用列表分別陳述每個模型回答的明顯缺點或可改進之處。)
+- ### 結論與建議
+  (提供最終的裁決總結或改進建議。)`;
+        
         const userContentForAnalyzer = `--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
+
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
             body: JSON.stringify({
                 model: model,
                 messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }],
-                response_format: { type: "json_object" }
+                // REMOVED: response_format: { type: "json_object" }
             })
         });
+
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(`API 錯誤 (${model}): ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
         }
+        
         const data = await response.json();
-        return JSON.parse(data.choices[0].message.content);
+        // Return the text content directly, no more JSON.parse()
+        return data.choices[0].message.content;
     }
     
-    // --- UI (MODALS) - [COMPLETELY REWRITTEN SECTION V2.3] ---
-
-    // Creates the modal background and a centered content box. The background is scrollable.
+    // --- UI (MODALS) ---
     function createModal(contentNode) {
-        hideModal(); // Close any existing modal
-        
-        // Add class to body to prevent background scrolling
+        hideModal(); 
         document.body.classList.add('analyzer-modal-open');
-
-        // Full-screen, scrollable overlay
         const overlay = document.createElement('div');
         overlay.id = 'analyzer-overlay';
-        overlay.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background-color: rgba(0,0,0,0.65);
-            z-index: 10000;
-            overflow-y: auto;
-            padding: 40px 20px;
-            box-sizing: border-box;
-            display: flex;
-            justify-content: center;
-        `;
+        overlay.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.65); z-index: 10000; overflow-y: auto; padding: 40px 20px; box-sizing: border-box; display: flex; justify-content: center;`;
         overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) { // Click on overlay background, not content
-                hideModal();
-            }
+            if (e.target === overlay) hideModal();
         });
-
-        // The visible content box
         const contentBox = document.createElement('div');
         contentBox.id = 'analyzer-content-box';
-        contentBox.style.cssText = `
-            width: 100%;
-            max-width: 800px;
-            margin: auto 0; /* Vertical centering for short content */
-            background-color: #ffffff;
-            color: #1a1a1a;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        `;
+        contentBox.style.cssText = `width: 100%; max-width: 800px; margin: auto 0; background-color: #ffffff; color: #1a1a1a; border-radius: 12px; padding: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;`;
         contentBox.appendChild(contentNode);
-
         overlay.appendChild(contentBox);
         document.body.appendChild(overlay);
     }
@@ -283,9 +268,10 @@
         createModal(contentNode);
     }
 
-    function showReportModal(reportJson) {
+    function showReportModal(reportText) {
         const contentNode = document.createElement('div');
-        contentNode.innerHTML = formatAnalysisToHtml(reportJson);
+        // The report is now text/markdown, so we pass it to the formatter
+        contentNode.innerHTML = formatAnalysisToHtml(reportText);
         const closeButton = createButton('關閉', hideModal, 'blue');
         closeButton.style.marginTop = '20px';
         contentNode.appendChild(closeButton);
@@ -299,8 +285,7 @@
             <div style="margin-top: 20px;">
                 <label for="model-input" style="display: block; margin-bottom: 8px; color: #333;">分析模型名稱:</label>
                 <input type="text" id="model-input" value="${localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc; background-color: #fff; color: #333; font-size: 14px;">
-            </div>
-        `;
+            </div>`;
         const buttonContainer = document.createElement('div');
         buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center; border-top: 1px solid #eee; padding-top: 20px;`;
         const versionDiv = document.createElement('div');
@@ -345,23 +330,40 @@
     function hideModal() {
         const overlay = document.getElementById('analyzer-overlay');
         if (overlay) overlay.remove();
-        // Remove class from body to re-enable background scrolling
         document.body.classList.remove('analyzer-modal-open');
     }
     
-    function formatAnalysisToHtml(json) {
-        let jsonString = JSON.stringify(json, null, 2);
-        jsonString = jsonString.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const html = jsonString.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
-            let cls = 'color: #c7254e;'; // number
-            if (/^"/.test(match)) {
-                if (/:$/.test(match)) cls = 'color: #0070c1;'; // key
-                else cls = 'color: #22a228;'; // string
-            } else if (/true|false/.test(match)) cls = 'color: #d73a49;'; // boolean
-            else if (/null/.test(match)) cls = 'color: #6f42c1;'; // null
-            return `<span style="${cls}">${match}</span>`;
-        });
-        return `<pre style="background-color: #f6f8fa; padding: 15px; border-radius: 6px; border: 1px solid #ddd; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; margin:0;">${html}</pre>`;
+    // --- [MODIFIED SECTION V2.5] ---
+    // This function now converts Markdown to HTML
+    function formatAnalysisToHtml(markdownText) {
+        if (!markdownText) return '無分析內容。';
+
+        // Basic sanitization
+        let html = markdownText
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        // Markdown to HTML conversion
+        html = html
+            // Headings (e.g., ### Title)
+            .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+            .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+            .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+            // Bold (**text**)
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            // Italic (*text*)
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            // List items (- item or * item)
+            .replace(/^\s*[-*] (.*$)/gim, '<li>$1</li>');
+
+        // Wrap adjacent list items in <ul>
+        html = html.replace(/<li>(.*?)<\/li>\s*(?=<li)/g, '<li>$1</li>');
+        html = html.replace(/(<li>.*?<\/li>)/g, '<ul>$1</ul>');
+        html = html.replace(/<\/ul>\s*<ul>/g, '');
+        
+        // Final container
+        return `<div class="markdown-body" style="line-height: 1.7; font-size: 15px;">${html.replace(/\n/g, '<br>')}</div>`;
     }
     
     function getChatIdFromUrl() {
@@ -371,12 +373,10 @@
 
     // --- INITIALIZATION ---
     async function initialize() {
-        // Inject style to disable body scroll when modal is open
         const styleSheet = document.createElement("style");
         styleSheet.type = "text/css";
         styleSheet.innerText = ".analyzer-modal-open { overflow: hidden; }";
         document.head.appendChild(styleSheet);
-
         console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
         await initDB();
         const observer = new MutationObserver(() => {
