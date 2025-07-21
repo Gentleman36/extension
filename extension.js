@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         TypingMind 對話分析器
+// @name         TypingMind 對話分析與整合器
 // @namespace    http://tampermonkey.net/
-// @version      2.9
-// @description  分析、整合並驗證 TypingMind 對話中的多模型回應，並提供可自訂參數的懸浮視窗介面。
+// @version      3.0
+// @description  分析、整合並驗證 TypingMind 對話中的多模型回應，提供效能數據，並擁有可自訂參數的懸浮視窗介面。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
 // @grant        none
@@ -12,7 +12,7 @@
     'use strict';
 
     // --- CONFIGURATION ---
-    const SCRIPT_VERSION = '2.9';
+    const SCRIPT_VERSION = '3.0';
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
@@ -74,7 +74,7 @@
         container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
         const mainButton = document.createElement('button');
         mainButton.id = 'analyzer-main-button';
-        mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s;`;
+        mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s; min-width: 120px; text-align: center;`;
         const reanalyzeButton = document.createElement('button');
         reanalyzeButton.id = 'analyzer-reanalyze-button';
         reanalyzeButton.innerHTML = '🔄';
@@ -116,36 +116,65 @@
         }
     }
 
-    // --- CORE LOGIC ---
+    // --- CORE LOGIC - [MODIFIED SECTION V3.0] ---
     async function handleAnalysisRequest(isReanalysis = false) {
-        const chatId = getChatIdFromUrl();
-        if (!chatId) return;
-        if (!isReanalysis) {
-            const existingReport = await getReport(chatId);
-            if (existingReport) {
-                showReportWindow(existingReport.report);
-                return;
-            }
-        }
+        const mainButton = document.getElementById('analyzer-main-button');
+        const reanalyzeButton = document.getElementById('analyzer-reanalyze-button');
+        const originalButtonText = mainButton.innerHTML;
+        
         try {
+            // --- New: Provide immediate feedback ---
+            if (mainButton) {
+                mainButton.innerHTML = '分析中... 🤖';
+                mainButton.disabled = true;
+                if(reanalyzeButton) reanalyzeButton.style.display = 'none'; // Hide reanalyze button during analysis
+            }
+
+            const chatId = getChatIdFromUrl();
+            if (!chatId) { throw new Error('無法獲取對話 ID。'); }
+            
+            if (!isReanalysis) {
+                const existingReport = await getReport(chatId);
+                if (existingReport) {
+                    showReportWindow(existingReport.report);
+                    return; // Exit early
+                }
+            }
+            
             let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
             if (!apiKey) {
                 apiKey = window.prompt('請輸入您的 OpenAI API 金鑰：');
-                if (!apiKey) return;
+                if (!apiKey) throw new Error('未提供 API 金鑰。');
                 localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
             }
+
             const messages = await getTypingMindChatHistory();
-            if (messages.length < 2) {
-                alert('當前對話訊息不足，無法進行分析。');
-                return;
+            if (messages.length < 2) { throw new Error('當前對話訊息不足，無法進行分析。'); }
+            
+            const startTime = Date.now();
+            const analysisResult = await analyzeConversation(apiKey, messages);
+            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+            
+            // --- New: Add performance footer ---
+            let footer = `\n\n---\n*報告生成耗時：${duration} 秒*`;
+            if (analysisResult.usage) {
+                footer += `\n\n*Token 消耗：輸入 ${analysisResult.usage.prompt_tokens}, 輸出 ${analysisResult.usage.completion_tokens}, 總計 ${analysisResult.usage.total_tokens}*`;
             }
-            const analysisText = await analyzeConversation(apiKey, messages);
-            await saveReport(chatId, analysisText);
-            showReportWindow(analysisText);
-            updateUIState();
+            const finalReportText = analysisResult.content + footer;
+
+            await saveReport(chatId, finalReportText);
+            showReportWindow(finalReportText);
+
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
             alert(`發生錯誤: ${error.message}`);
+        } finally {
+             // --- New: Always restore button state ---
+            if (mainButton) {
+                mainButton.disabled = false;
+                // Restore state properly
+                updateUIState();
+            }
         }
     }
 
@@ -183,7 +212,7 @@
         });
     }
 
-    // --- LLM INTERACTION - [MODIFIED SECTION V2.9] ---
+    // --- LLM INTERACTION - [MODIFIED SECTION V3.0] ---
     async function analyzeConversation(apiKey, messages) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
         const temperature = parseFloat(localStorage.getItem(TEMP_STORAGE_KEY) || 1.0);
@@ -195,14 +224,20 @@
             if (typeof content === 'string') return content;
             return JSON.stringify(content, null, 2);
         };
-        const lastUserMsg = messages.filter(m => m.role === 'user').pop();
-        const lastUserQuestion = lastUserMsg ? stringifyContent(lastUserMsg.content) : 'No user question found.';
-        const transcript = messages.map(msg => `**${(msg.role ?? 'system_note').toUpperCase()} (Model: ${msg.model || 'N/A'})**: ${stringifyContent(msg.content)}`).join('\n\n---\n\n');
 
-        // New prompt for the 3-part structure
+        // --- New: Simplified logic to build transcript ---
+        const transcript = messages
+            .filter(msg => msg.role !== 'user') // We only need assistant responses in the transcript
+            .map(msg => {
+                // Use a simple placeholder for model ID to avoid clutter
+                const modelId = msg.model ? `(模型ID: ...${msg.model.slice(-6)})` : '';
+                return `--- 模型回答 ${modelId} ---\n${stringifyContent(msg.content)}`;
+            }).join('\n\n');
+
+        // New prompt for the 3-part structure and smarter model naming
         const systemPrompt = `你是一位頂尖的專家級研究員與事實查核員。你的任務是基於使用者提出的「原始問題」，對提供的「多個AI模型的回答文字稿」進行分析與整合。
 
-請嚴格遵循以下三段式結構，使用清晰的 Markdown 格式輸出你的最終報告：
+請嚴格遵循以下三段式結構，使用清晰的 Markdown 格式輸出你的最終報告。在你的報告中，當需要指代不同模型時，請使用「模型A」、「模型B」等清晰代號，而不要使用文字稿中提供的長串模型ID。
 
 ### 1. 原始問題
 (在此處簡潔地重述使用者提出的原始問題。)
@@ -213,7 +248,8 @@
 ### 3. 權威性統整回答 (最重要)
 (這是報告的核心。請將所有模型回答中的正確、互補的資訊，進行嚴格的事實查核與交叉驗證後，融合成一份單一、全面、且權威性的最終答案。這份答案應該要超越任何單一模型的回答，成為使用者唯一需要閱讀的完整內容。如果不同模型存在無法調和的矛盾，請在此處明確指出。)`;
         
-        const userContentForAnalyzer = `--- 對話文字稿 ---\n${transcript}`;
+        const lastUserQuestion = stringifyContent(messages.find(m => m.role === 'user')?.content) || '未找到原始問題。';
+        const userContentForAnalyzer = `這是使用者提出的「原始問題」:\n${lastUserQuestion}\n\n這是提供給你的「對話文字稿」，其中包含多個模型的回答:\n${transcript}`;
         
         const requestBody = {
             model: model,
@@ -236,9 +272,12 @@
             throw new Error(`API 錯誤 (${model}): ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
         }
         const data = await response.json();
-        // Prepend the original question to the AI's response for a complete report
-        const finalReport = `### 1. 原始問題\n${lastUserQuestion}\n\n` + data.choices[0].message.content;
-        return finalReport;
+        
+        // Return both content and usage stats
+        return {
+            content: data.choices[0].message.content,
+            usage: data.usage
+        };
     }
 
     // --- UI (FLOATING WINDOW) ---
@@ -326,9 +365,21 @@
 
     function makeDraggable(element, handle) { let p1=0,p2=0,p3=0,p4=0; handle.onmousedown=e=>{e.preventDefault();p3=e.clientX;p4=e.clientY;document.onmouseup=()=>{document.onmouseup=null;document.onmousemove=null;};document.onmousemove=e=>{e.preventDefault();p1=p3-e.clientX;p2=p4-e.clientY;p3=e.clientX;p4=e.clientY;element.style.top=(element.offsetTop-p2)+"px";element.style.left=(element.offsetLeft-p1)+"px";};};}
     function makeResizable(element, handle) { handle.onmousedown=e=>{e.preventDefault();const sX=e.clientX,sY=e.clientY,sW=parseInt(document.defaultView.getComputedStyle(element).width,10),sH=parseInt(document.defaultView.getComputedStyle(element).height,10);document.onmousemove=e=>{element.style.width=(sW+e.clientX-sX)+'px';element.style.height=(sH+e.clientY-sY)+'px';};document.onmouseup=()=>{document.onmousemove=null;document.onmouseup=null;};};}
-    function formatMarkdownToHtml(markdownText) { if (!markdownText) return '無分析內容。'; let html = markdownText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); html = html.replace(/^### (.*$)/gim, '<h3 style="margin-bottom: 10px; margin-top: 20px; color: #333;">$1</h3>').replace(/^## (.*$)/gim, '<h2 style="margin-bottom: 15px; margin-top: 25px; border-bottom: 1px solid #eee; padding-bottom: 5px; color: #111;">$1</h2>').replace(/^# (.*$)/gim, '<h1>$1</h1>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<em>$1</em>').replace(/^\s*[-*] (.*$)/gim, '<li style="margin-bottom: 8px;">$1</li>'); html = html.replace(/<li>(.*?)<\/li>\s*(?=<li)/g, '<li>$1</li>').replace(/(<li>.*?<\/li>)/g, '<ul style="padding-left: 20px; margin-top: 10px;">$1</ul>').replace(/<\/ul>\s*<ul>/g, ''); return `<div class="markdown-body" style="line-height: 1.7; font-size: 15px;">${html.replace(/\n/g, '<br>')}</div>`;}
+    function formatMarkdownToHtml(markdownText) { if (!markdownText) return '無分析內容。'; let html = markdownText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); html = html.replace(/^### (.*$)/gim, '<h3 style="margin-bottom: 10px; margin-top: 20px; color: #333;">$1</h3>').replace(/^## (.*$)/gim, '<h2 style="margin-bottom: 15px; margin-top: 25px; border-bottom: 1px solid #eee; padding-bottom: 5px; color: #111;">$1</h2>').replace(/^# (.*$)/gim, '<h1>$1</h1>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<em>$1</em>').replace(/^\s*[-*] (.*$)/gim, '<li style="margin-bottom: 8px;">$1</li>'); html = html.replace(/<li>(.*?)<\/li>\s*(?=<li)/g, '<li>$1</li>').replace(/(<li>.*?<\/li>)/g, '<ul style="padding-left: 20px; margin-top: 10px;">$1</ul>').replace(/<\/ul>\s*<ul>/g, ''); return `<div class="markdown-body" style="line-height: 1.7; font-size: 15px;">${html.replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>')}</div>`;}
     function getChatIdFromUrl() { const hash = window.location.hash; return (hash && hash.startsWith('#chat=')) ? hash.substring('#chat='.length) : null; }
-    async function initialize() { console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`); await initDB(); const observer = new MutationObserver(() => { if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) { createUI(); } }); observer.observe(document.body, { childList: true, subtree: true }); window.addEventListener('hashchange', updateUIState, false); }
+    
+    // --- INITIALIZATION ---
+    async function initialize() {
+        console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
+        await initDB();
+        const observer = new MutationObserver(() => {
+            if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
+                createUI();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        window.addEventListener('hashchange', updateUIState, false);
+    }
 
     initialize();
 
