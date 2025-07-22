@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TypingMind 對話分析與整合器
 // @namespace    http://tampermonkey.net/
-// @version      4.8  // 更新版本以反映UI修正
+// @version      4.9  // 更新版本以反映UI修正
 // @description  分析、整合並驗證 TypingMind 對話中的多模型回應，提供多金鑰、自訂提示詞、自動統整與 Win11 通知等功能。
 // @author       Gemini & Your Name
 // @match        https://www.typingmind.com/*
@@ -12,7 +12,7 @@
     'use strict';
 
     // --- CONFIGURATION (v4.6) ---
-    const SCRIPT_VERSION = '4.8';  // 更新版本
+    const SCRIPT_VERSION = '4.9';  // 更新版本
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o';
 
     // 金鑰儲存 (支援多模型)
@@ -147,14 +147,14 @@
     }
 
 
-    // --- UI CREATION & STATE MANAGEMENT (v4.6 - 按鈕位置上移) ---
+    // --- UI CREATION & STATE MANAGEMENT (學習v3.1寫法) ---
     function createUI() {
         if (document.getElementById('analyzer-controls-container')) return;
 
         const container = document.createElement('div');
         container.id = 'analyzer-controls-container';
-        // 功能 6: 按鈕位置上移
-        container.style.cssText = `position: fixed; bottom: 80px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
+        // 學習v3.1位置：bottom: 20px; right: 20px;
+        container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
 
         const mainButton = document.createElement('button');
         mainButton.id = 'analyzer-main-button';
@@ -672,12 +672,12 @@ ${prevSummary || '這是第一次統整，沒有過去的報告。'}
     }
     function getChatIdFromUrl() { const hash = window.location.hash; return (hash && hash.startsWith('#chat=')) ? hash.substring('#chat='.length) : null; }
     
-    // --- INITIALIZATION ---
+    // --- INITIALIZATION (學習v3.1的初始化邏輯) ---
     async function initialize() {
         console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
         await initDB();
         
-        // UI State update on URL change
+        // More robust state update logic (from v3.1)
         let lastSeenChatId = null;
         setInterval(() => {
             const currentChatId = getChatIdFromUrl();
@@ -685,31 +685,25 @@ ${prevSummary || '這是第一次統整，沒有過去的報告。'}
                 lastSeenChatId = currentChatId;
                 updateUIState();
             }
-        }, 500);
+        }, 500); // Check every 500ms
 
-        // 初始UI檢查與輪詢（修正按鈕不顯示問題）
-        function checkAndCreateUI() {
+        // UI Creation trigger (from v3.1)
+        const observer = new MutationObserver(() => {
             if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
                 createUI();
-                updateUIState();  // 立即更新狀態
-                console.log('UI 已創建');
             }
-        }
-        checkAndCreateUI();  // 立即檢查
-        let pollCount = 0;
-        const pollInterval = setInterval(() => {
-            checkAndCreateUI();
-            pollCount++;
-            if (pollCount >= 5 || document.getElementById('analyzer-controls-container')) {
-                clearInterval(pollInterval);
-            }
-        }, 500);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
 
         // UI Creation and Auto-analysis trigger
         let autoAnalyzeTimeout = null;
         let lastMessageCount = 0;  // 用於fallback偵測
-        const observer = new MutationObserver((mutations) => {
-            checkAndCreateUI();  // 在Observer中額外檢查UI
+        const autoObserver = new MutationObserver((mutations) => {
+            // 在Observer中額外檢查UI
+            if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
+                createUI();
+                console.log('UI 已透過autoObserver創建');
+            }
             
             // 功能 5: 自動統整
             const autoAnalyzeEnabled = localStorage.getItem(AUTO_ANALYZE_KEY) !== 'false';
@@ -743,7 +737,7 @@ ${prevSummary || '這是第一次統整，沒有過去的報告。'}
                 }
             }
         });
-        observer.observe(document.body, { childList: true, subtree: true });
+        autoObserver.observe(document.body, { childList: true, subtree: true });
     }
 
     initialize();
