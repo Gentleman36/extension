@@ -1,318 +1,725 @@
---- 原始程式 (clipboard.txt)  
-+++ 新版本 clipboard.txt (v4.6)  
-@@
- // @version      3.1  
-+// @version      4.6  
-@@
--    const SCRIPT_VERSION = '3.1';
-+    const SCRIPT_VERSION = '4.6';
-+
-+    // --- STORAGE KEYS FOR MULTI-API SUPPORT ---
-+    const OPENAI_KEY_STORAGE_KEY    = 'typingmind_analyzer_openai_api_key';
-+    const XAI_KEY_STORAGE_KEY       = 'typingmind_analyzer_xai_api_key';
-+    const GEMINI_KEY_STORAGE_KEY    = 'typingmind_analyzer_gemini_api_key';
-+    const AUTO_ANALYZE_STORAGE_KEY  = 'typingmind_analyzer_auto_analyze';
-+    const CUSTOM_PROMPTS_STORAGE_KEY= 'typingmind_analyzer_custom_prompts';
-@@
--    const PROMPTS = [
-+    // --- BUILT-IN PROMPTS (永遠可供選擇) ---
-+    const BUILT_IN_PROMPTS = [
-@@
--    ];
-+    ];
-+
-+    // --- LOAD CUSTOM PROMPTS FROM STORAGE ---
-+    let customPrompts = [];
-+    try {
-+        customPrompts = JSON.parse(localStorage.getItem(CUSTOM_PROMPTS_STORAGE_KEY) || '[]');
-+    } catch (e) { customPrompts = []; }
-+
-+    // --- MERGED PROMPTS (包含內建 + 自定義) ---
-+    let PROMPTS = [...BUILT_IN_PROMPTS, ...customPrompts];
-@@
-     function createUI() {
-         if (document.getElementById('analyzer-controls-container')) return;
-         const container = document.createElement('div');
--        container.id = 'analyzer-controls-container';
--        container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
-+        container.id = 'analyzer-controls-container';
-+        // 往上移至避免遮擋 TypingMind 按鍵
-+        container.style.cssText = `position: fixed; bottom: 80px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
-@@
-     }
-@@
-     async function handleAnalysisRequest(isReanalysis = false) {
-         const mainButton = document.getElementById('analyzer-main-button');
-@@
-         try {
-             if (mainButton) {
-@@
-             if (!isReanalysis) {
-@@
-             let apiKey;
-+            // 根據所選 MODEL 決定用哪組金鑰
-+            const selectedModel = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
-+            if (/^xai/i.test(selectedModel)) {
-+                apiKey = localStorage.getItem(XAI_KEY_STORAGE_KEY);
-+                if (!apiKey) {
-+                    apiKey = window.prompt('請輸入您的 XAI API 金鑰：');
-+                    if (!apiKey) throw new Error('未提供 XAI API 金鑰。');
-+                    localStorage.setItem(XAI_KEY_STORAGE_KEY, apiKey);
-+                }
-+            } else if (/gemini/i.test(selectedModel)) {
-+                apiKey = localStorage.getItem(GEMINI_KEY_STORAGE_KEY);
-+                if (!apiKey) {
-+                    apiKey = window.prompt('請輸入您的 Gemini API 金鑰：');
-+                    if (!apiKey) throw new Error('未提供 Gemini API 金鑰。');
-+                    localStorage.setItem(GEMINI_KEY_STORAGE_KEY, apiKey);
-+                }
-+            } else {
-+                apiKey = localStorage.getItem(OPENAI_KEY_STORAGE_KEY);
-+                if (!apiKey) {
-+                    apiKey = window.prompt('請輸入您的 OpenAI API 金鑰：');
-+                    if (!apiKey) throw new Error('未提供 OpenAI API 金鑰。');
-+                    localStorage.setItem(OPENAI_KEY_STORAGE_KEY, apiKey);
-+                }
-+            }
-             const { messages, modelMap } = await getTypingMindChatHistory();
-+            // 取用過去一次的總結
-+            const pastReports = await getReportsForChat(chatId);
-+            const lastSummary = pastReports.length > 0 ? pastReports[0].report : '';
-@@
-             const startTime = Date.now();
--            const analysisResult = await analyzeConversation(apiKey, messages, modelMap);
-+            // 傳入過去總結
-+            const analysisResult = await analyzeConversation(apiKey, messages, modelMap, lastSummary);
-             const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-@@
-             const finalReportText = analysisResult.content + footer;
--            await saveReport(chatId, finalReportText);
--            showToast('總結已完成！');
--            showReportWindow(finalReportText);
-+            // 一併存入 DB
-+            await saveReport(chatId, finalReportText);
-+
-+            // 系統通知 + 頁面 toast
-+            showToast('總結已完成！');
-+            showSystemNotification('分析完成', '整合分析已經完成，點擊查看報告。');
-+
-+            // 動態標題：問題前15字 + 時間 (到分鐘)
-+            const lastUserTurns = messages.filter(m => m.role === 'user');
-+            const rawQ = lastUserTurns.length > 0 ? String(lastUserTurns.slice(-1)[0].content) : '';
-+            const qTrim = rawQ.replace(/\s+/g, ' ').substring(0, 15) + (rawQ.length > 15 ? '…' : '');
-+            const now = new Date();
-+            const timestampTitle = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ` +
-+                                   `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-+            const windowTitle = `${qTrim} ${timestampTitle}`;
-+            showReportWindow(finalReportText, windowTitle);
-         } catch (error) {
-             console.error('分析擴充程式錯誤:', error);
-             alert(`發生錯誤: ${error.message}`);
-@@
-     function analyzeConversation(apiKey, messages, modelMap) {
--        const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
-+    async function analyzeConversation(apiKey, messages, modelMap, pastSummary = '') {
-+        const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
-         const temperature = parseFloat(localStorage.getItem(TEMP_STORAGE_KEY) || 1.0);
-         const top_p = parseFloat(localStorage.getItem(TOPP_STORAGE_KEY) || 1.0);
-@@
--        const lastUserQuestion = stringifyContent(messages.find(m => m.role === 'user')?.content) || '未找到原始問題。';
--        const transcript = messages.filter(msg => msg.role !== 'user').map(msg => `--- 模型回答 (ID: ${msg.model || 'N/A'}) ---\n${stringifyContent(msg.content)}`).join('\n\n');
-+        // 取最後一輪使用者提問
-+        const userTurns = messages.filter(m => m.role === 'user');
-+        const lastUserQuestion = stringifyContent(userTurns[userTurns.length-1]?.content) || '未找到原始問題。';
-+        // 只取 AI 模型的回答
-+        const transcript = messages
-+            .filter(msg => msg.role === 'assistant')
-+            .map(msg => `--- 模型回答 (ID: ${msg.model || 'N/A'}) ---\n${stringifyContent(msg.content)}`)
-+            .join('\n\n');
-+
-+        // 在 prompt 中加入「過去總結」
-+        let userContentForAnalyzer = `這是已知模型ID與其官方名稱的對照表，請在你的報告中優先使用官方名稱：\n`;
-         for (const id in modelMap) {
-             modelMapInfo += `- ${id}: ${modelMap[id]}\n`;
-         }
--
--        const userContentForAnalyzer = `${modelMapInfo}\n--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
-+        userContentForAnalyzer = [
-+            modelMapInfo,
-+            `--- 過去總結 ---\n${pastSummary || '無過去總結'}`,
-+            `--- 原始問題 ---\n${lastUserQuestion}`,
-+            `--- AI 模型回答 ---\n${transcript}`
-+        ].join('\n\n');
-@@
--        const requestBody = { model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }], temperature, top_p };
-+        const requestBody = {
-+            model,
-+            messages: [
-+                { role: 'system', content: systemPrompt },
-+                { role: 'user', content: userContentForAnalyzer }
-+            ],
-+            temperature, top_p
-+        };
-         if (reasoningEffort) { requestBody.reasoning_effort = reasoningEffort; }
-@@
--        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-+        // TODO: 支援 XAI / Gemini API endpoint (目前僅 OpenAI)
-+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-             method: 'POST',
-             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-             body: JSON.stringify(requestBody)
-@@
-     }
-+
-+    // --- Windows 11 系統通知 --- 
-+    function showSystemNotification(title, body) {
-+        if (!("Notification" in window)) return;
-+        if (Notification.permission === "granted") {
-+            new Notification(title, { body });
-+        } else if (Notification.permission !== "denied") {
-+            Notification.requestPermission().then(permission => {
-+                if (permission === "granted") {
-+                    new Notification(title, { body });
-+                }
-+            });
-+        }
-+    }
-+
-+    // --- 修改 showReportWindow: 可自訂標題 & 加入「複製統整摘要」按鈕 ---
-     function showReportWindow(reportText) {
--        const contentNode = document.createElement('div');
--        contentNode.innerHTML = formatMarkdownToHtml(reportText);
--        createFloatingWindow('整合分析報告', contentNode);
-+    function showReportWindow(reportText, customTitle) {
-+        const contentNode = document.createElement('div');
-+        contentNode.innerHTML = formatMarkdownToHtml(reportText);
-+        // 建立按鈕
-+        const copyBtn = document.createElement('button');
-+        copyBtn.textContent = '📋 複製統整摘要';
-+        copyBtn.title = '只複製「權威性統整回答」區段';
-+        copyBtn.style.cssText = `margin-right:8px;padding:4px 8px;border-radius:4px;border:none;background:#4A90E2;color:#fff;cursor:pointer;`;
-+        copyBtn.onclick = () => {
-+            const match = reportText.match(/###\s*3\.[\s\S]*?(?=^###\s*\d|\z)/m);
-+            const summary = match ? match[0].trim() : reportText;
-+            navigator.clipboard.writeText(summary).then(() => showToast('已複製統整摘要'));
-+        };
-+        createFloatingWindow(customTitle || '整合分析報告', contentNode, { actions: [copyBtn] });
-     }
-@@
-     function showSettingsWindow() {
-         const contentNode = document.createElement('div');
-@@
--        const saveHandler = () => {
-+        const saveHandler = () => {
-             localStorage.setItem(PROMPT_STORAGE_KEY, contentNode.querySelector('#prompt-select').value);
-             localStorage.setItem(MODEL_STORAGE_KEY, contentNode.querySelector('#model-input').value);
-             localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, contentNode.querySelector('#reasoning-input').value);
-             localStorage.setItem(TEMP_STORAGE_KEY, contentNode.querySelector('#temp-input').value);
-             localStorage.setItem(TOPP_STORAGE_KEY, contentNode.querySelector('#topp-input').value);
-+            // API Keys
-+            localStorage.setItem(OPENAI_KEY_STORAGE_KEY, contentNode.querySelector('#openai-key').value.trim());
-+            localStorage.setItem(XAI_KEY_STORAGE_KEY, contentNode.querySelector('#xai-key').value.trim());
-+            localStorage.setItem(GEMINI_KEY_STORAGE_KEY, contentNode.querySelector('#gemini-key').value.trim());
-+            // 自動分析
-+            localStorage.setItem(AUTO_ANALYZE_STORAGE_KEY, contentNode.querySelector('#auto-analyze').checked ? '1' : '0');
-             hideWindow();
-             alert(`設定已儲存！`);
-         };
-@@
--        createFloatingWindow('設定', contentNode);
-+        // 加入「管理自定義提示詞」按鈕
-+        const manageCustomBtn = document.createElement('button');
-+        manageCustomBtn.textContent = '📝 管理自定義提示詞';
-+        manageCustomBtn.style.cssText = `margin-top:10px; background:#f9f9f9; border:1px solid #ccc; padding:6px 12px; border-radius:4px; cursor:pointer;`;
-+        manageCustomBtn.onclick = () => {
-+            hideWindow();
-+            showCustomPromptsWindow();
-+        };
-+        contentNode.insertBefore(manageCustomBtn, contentNode.lastElementChild);
-+
-+        createFloatingWindow('設定', contentNode);
-     }
-+
-+    // --- 自定義提示詞編輯視窗 ---
-+    function showCustomPromptsWindow() {
-+        const w = document.createElement('div');
-+        let html = '<div style="max-height:300px;overflow:auto;">';
-+        customPrompts.forEach((p, i) => {
-+            html += `<div data-index="${i}" style="margin-bottom:10px;padding:8px;border:1px solid #ddd;border-radius:6px;">
-+                        <input class="cp-title" placeholder="標題" value="${p.title}" style="width:100%;margin-bottom:4px;padding:4px;">
-+                        <textarea class="cp-body" placeholder="提示詞內容" style="width:100%;height:80px;padding:4px;">${p.prompt}</textarea>
-+                        <button class="cp-del" style="float:right;background:#e74c3c;color:#fff;border:none;padding:2px 6px;border-radius:4px;cursor:pointer;">刪除</button>
-+                    </div>`;
-+        });
-+        html += '</div>';
-+        html += '<button id="add-cp" style="margin-bottom:10px;background:#4A90E2;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">＋ 新增提示詞</button>';
-+        html += '<div style="text-align:right;margin-top:12px;"><button id="save-cp" style="background:#28a745;color:#fff;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">儲存</button></div>';
-+        w.innerHTML = html;
-+        createFloatingWindow('管理自定義提示詞', w);
-+        w.querySelectorAll('.cp-del').forEach(btn => {
-+            btn.onclick = e => {
-+                const idx = +e.currentTarget.closest('div[data-index]').dataset.index;
-+                customPrompts.splice(idx,1);
-+                showCustomPromptsWindow();
-+            };
-+        });
-+        w.querySelector('#add-cp').onclick = () => {
-+            customPrompts.push({ title:'', prompt:'' });
-+            showCustomPromptsWindow();
-+        };
-+        w.querySelector('#save-cp').onclick = () => {
-+            const cards = w.querySelectorAll('div[data-index]');
-+            customPrompts = [];
-+            cards.forEach(div=>{
-+                const t = div.querySelector('.cp-title').value.trim();
-+                const b = div.querySelector('.cp-body').value.trim();
-+                if (t && b) customPrompts.push({ title:t, prompt:b });
-+            });
-+            localStorage.setItem(CUSTOM_PROMPTS_STORAGE_KEY, JSON.stringify(customPrompts));
-+            PROMPTS = [...BUILT_IN_PROMPTS, ...customPrompts];
-+            hideWindow();
-+            alert('自定義提示詞已更新');
-+        };
-+    }
-@@
-     async function initialize() {
-         console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
-         await initDB();
-+        // 讓 PROMPTS 可動態更新
-+        PROMPTS = [...BUILT_IN_PROMPTS, ...customPrompts];
-+
-         // More robust state update logic
-         let lastSeenChatId = null;
-         setInterval(() => {
-             const currentChatId = getChatIdFromUrl();
-             if (currentChatId !== lastSeenChatId) {
-                 lastSeenChatId = currentChatId;
-                 updateUIState();
-             }
-         }, 500); // Check every 500ms
-@@
-         const observer = new MutationObserver(() => {
-             if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
-                 createUI();
-             }
-         });
-         observer.observe(document.body, { childList: true, subtree: true });
-+
-+        // --- 自動整合機制 ---
-+        const autoCheck = () => {
-+            const enabled = localStorage.getItem(AUTO_ANALYZE_STORAGE_KEY) === '1';
-+            if (!enabled) return;
-+            const chatId = getChatIdFromUrl();
-+            if (!chatId) return;
-+            // 若尚未儲存過報告，且已經有 AI model 回答，則觸發分析
-+            getReportsForChat(chatId).then(reports => {
-+                if (reports.length === 0) {
-+                    getTypingMindChatHistory().then(({ messages }) => {
-+                        const assistantCount = messages.filter(m=>m.role==='assistant').length;
-+                        if (assistantCount > 0) {
-+                            handleAnalysisRequest(false);
-+                        }
-+                    }).catch(()=>{});
-+                }
-+            });
-+        };
-+        // 每 1 秒檢查一次
-+        setInterval(autoCheck, 1000);
-     }
+// ==UserScript==
+// @name         TypingMind 對話分析與整合器
+// @namespace    http://tampermonkey.net/
+// @version      4.7  // 更新版本以反映修正
+// @description  分析、整合並驗證 TypingMind 對話中的多模型回應，提供多金鑰、自訂提示詞、自動統整與 Win11 通知等功能。
+// @author       Gemini & Your Name
+// @match        https://www.typingmind.com/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // --- CONFIGURATION (v4.6) ---
+    const SCRIPT_VERSION = '4.7';  // 更新版本
+    const DEFAULT_ANALYZER_MODEL = 'gpt-4o';
+
+    // 金鑰儲存 (支援多模型)
+    const KEY_OPENAI = 'typingmind_openai_key';
+    const KEY_XAI = 'typingmind_xai_key';
+    const KEY_GEMINI = 'typingmind_gemini_key';
+
+    // 設定儲存
+    const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
+    const TEMP_STORAGE_KEY = 'typingmind_analyzer_temperature';
+    const TOPP_STORAGE_KEY = 'typingmind_analyzer_top_p';
+    const REASONING_EFFORT_STORAGE_KEY = 'typingmind_analyzer_reasoning_effort';
+    const PROMPT_STORAGE_KEY = 'typingmind_analyzer_prompt_title';
+    const CUSTOM_PROMPTS_KEY = 'typingmind_customPrompts';
+    const AUTO_ANALYZE_KEY = 'typingmind_autoAnalyze';
+
+
+    // --- PROMPT LIBRARY (v4.6 - 支援自訂) ---
+    let PROMPTS = [
+        {
+            title: "整合與驗證 (v3.0+)",
+            prompt: `你是一位頂尖的專家級研究員與事實查核員。你的任務是基於使用者提出的「原始問題」，對提供的「多個AI模型的回答文字稿」進行分析與整合。同時，你也會收到一份「過去一次的統整報告」，請將其內容納入考量，進行增補、修正或迭代，以產生更完善的結果。
+
+請嚴格遵循以下三段式結構，使用清晰的 Markdown 格式輸出你的最終報告。在報告中，請優先使用模型官方名稱。
+
+### 1. 原始問題
+(在此處簡潔地重述使用者提出的原始問題。)
+
+### 2. AI模型比較
+(在此處用一兩句話簡要總結哪個模型的回答總體上更佳，並陳述最核心的理由。)
+
+### 3. 權威性統整回答 (最重要)
+(這是報告的核心。請將所有模型回答中的正確、互補的資訊，以及「過去的統整報告」內容，進行嚴格的事實查核與交叉驗證後，融合成一份單一、全面、且權威性的最终答案。這份答案應該要超越任何單一模型的回答，成為使用者唯一需要閱讀的完整內容。如果不同模型存在無法調和的矛盾，請在此處明確指出。)`
+        },
+        {
+            title: "優劣比較 (v2.x)",
+            prompt: `你是一位專業、公正且嚴謹的 AI 模型評估員。你的任務是基於使用者提出的「原始問題」，對提供的「對話文字稿」中多個 AI 模型的回答進行深入的比較分析。你的分析必須客觀、有理有據。
+
+請使用清晰的 Markdown 格式來組織你的回答，應包含以下部分：
+- ### 總體評價
+  (簡要說明哪個模型的回答更好，為什麼？)
+- ### 各模型優點
+  (使用列表分別陳述每個模型回答的優點。)
+- ### 各模型缺點
+  (使用列表分別陳述每個模型回答的缺點。)
+- ### 結論與建議
+  (提供最終的裁決總結或改進建議。)`
+        }
+    ];
+
+    // 功能 8: 載入自訂提示詞
+    try {
+        const customPrompts = JSON.parse(localStorage.getItem(CUSTOM_PROMPTS_KEY) || '[]');
+        PROMPTS = [...customPrompts, ...PROMPTS];
+    } catch (e) {
+        console.error("無法解析自訂提示詞:", e);
+    }
+
+
+    // --- DATABASE CONFIGURATION ---
+    const DB_NAME = 'TypingMindAnalyzerDB';
+    const REPORT_STORE_NAME = 'analysis_reports';
+    const DB_VERSION = 3;  // 升級版本以支援遷移
+    let db;
+
+
+    // --- DATABASE HELPERS (v4.6 - 報告結構更新) ---
+    function initDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, DB_VERSION);
+            request.onupgradeneeded = (event) => {
+                const dbInstance = event.target.result;
+                const oldVersion = event.oldVersion;
+                let store;
+                if (!dbInstance.objectStoreNames.contains(REPORT_STORE_NAME)) {
+                    store = dbInstance.createObjectStore(REPORT_STORE_NAME, { keyPath: 'uuid' });
+                    store.createIndex('chatIdIndex', 'chatId', { unique: false });
+                } else {
+                    store = event.target.transaction.objectStore(REPORT_STORE_NAME);
+                }
+                // 遷移邏輯：如果舊版本 < 3，將舊報告轉換為新結構
+                if (oldVersion < 3) {
+                    store.openCursor().onsuccess = (event) => {
+                        const cursor = event.target.result;
+                        if (cursor) {
+                            const report = cursor.value;
+                            if (typeof report.report === 'string') {
+                                report.report = { title: '舊報告 - ' + new Date(report.timestamp).toLocaleString(), content: report.report };
+                                cursor.update(report);
+                            }
+                            cursor.continue();
+                        }
+                    };
+                }
+            };
+            request.onerror = (event) => reject(`資料庫錯誤: ${event.target.errorCode}`);
+            request.onsuccess = (event) => {
+                db = event.target.result;
+                resolve(db);
+            };
+        });
+    }
+
+    // 功能 3: 報告儲存結構更新 (包含標題)
+    function saveReport(chatId, reportObject) {
+        return new Promise((resolve, reject) => {
+            if (!db) return reject('資料庫未初始化。');
+            const transaction = db.transaction([REPORT_STORE_NAME], 'readwrite');
+            const store = transaction.objectStore(REPORT_STORE_NAME);
+            const report = {
+                uuid: self.crypto.randomUUID(),
+                chatId: chatId,
+                report: reportObject, // reportObject is { title, content }
+                timestamp: new Date()
+            };
+            const request = store.add(report);
+            request.onsuccess = () => resolve();
+            request.onerror = (event) => reject(`儲存報告失敗: ${event.target.error}`);
+        });
+    }
+
+    function getReportsForChat(chatId) {
+        return new Promise((resolve, reject) => {
+            if (!db) return reject('資料庫未初始化。');
+            const transaction = db.transaction([REPORT_STORE_NAME], 'readonly');
+            const store = transaction.objectStore(REPORT_STORE_NAME);
+            const index = store.index('chatIdIndex');
+            const request = index.getAll(chatId);
+            request.onsuccess = () => resolve(request.result.sort((a, b) => b.timestamp - a.timestamp)); // Sort newest first
+            request.onerror = (event) => reject(`讀取報告失敗: ${event.target.error}`);
+        });
+    }
+
+
+    // --- UI CREATION & STATE MANAGEMENT (v4.6 - 按鈕位置上移) ---
+    function createUI() {
+        if (document.getElementById('analyzer-controls-container')) return;
+
+        const container = document.createElement('div');
+        container.id = 'analyzer-controls-container';
+        // 功能 6: 按鈕位置上移
+        container.style.cssText = `position: fixed; bottom: 80px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
+
+        const mainButton = document.createElement('button');
+        mainButton.id = 'analyzer-main-button';
+        mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s; min-width: 120px; text-align: center;`;
+
+        const reanalyzeButton = document.createElement('button');
+        reanalyzeButton.id = 'analyzer-reanalyze-button';
+        reanalyzeButton.innerHTML = '🔄';
+        reanalyzeButton.title = '重新分析與整合';
+        reanalyzeButton.style.cssText = `background-color: #6c757d; color: white; border: none; border-radius: 50%; width: 38px; height: 38px; font-size: 18px; cursor: pointer; display: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1);`;
+        reanalyzeButton.onclick = () => handleAnalysisRequest(true);
+
+        const settingsButton = document.createElement('button');
+        settingsButton.innerHTML = '⚙️';
+        settingsButton.title = '設定';
+        settingsButton.style.cssText = `background-color: #f0f0f0; color: #333; border: 1px solid #ccc; border-radius: 50%; width: 38px; height: 38px; font-size: 20px; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);`;
+        settingsButton.onclick = showSettingsWindow;
+
+        container.appendChild(reanalyzeButton);
+        container.appendChild(mainButton);
+        container.appendChild(settingsButton);
+        document.body.appendChild(container);
+
+        updateUIState();
+    }
+
+    async function updateUIState() {
+        const mainButton = document.getElementById('analyzer-main-button');
+        if (!mainButton || mainButton.disabled) return;
+        const reanalyzeButton = document.getElementById('analyzer-reanalyze-button');
+        const chatId = getChatIdFromUrl();
+        if (!chatId) {
+            mainButton.style.display = 'none';
+            reanalyzeButton.style.display = 'none';
+            return;
+        }
+        mainButton.style.display = 'inline-block';
+        const reports = await getReportsForChat(chatId);
+        if (reports.length > 0) {
+            mainButton.innerHTML = '📄 查看報告';
+            mainButton.onclick = () => showReportListWindow(reports);
+            reanalyzeButton.style.display = 'inline-block';
+        } else {
+            mainButton.innerHTML = '🤖 整合分析';
+            mainButton.onclick = () => handleAnalysisRequest(false);
+            reanalyzeButton.style.display = 'none';
+        }
+    }
+
+
+    // --- CORE LOGIC (v4.6 - 重構以支援新功能) ---
+    async function handleAnalysisRequest(isReanalysis = false, isAuto = false) {
+        const mainButton = document.getElementById('analyzer-main-button');
+        const reanalyzeButton = document.getElementById('analyzer-reanalyze-button');
+        try {
+            if (mainButton) {
+                mainButton.innerHTML = '分析中... 🤖';
+                mainButton.disabled = true;
+                if(reanalyzeButton) reanalyzeButton.style.display = 'none';
+            }
+
+            const chatId = getChatIdFromUrl();
+            if (!chatId) { throw new Error('無法獲取對話 ID。'); }
+
+            if (!isReanalysis && !isAuto) {
+                const reports = await getReportsForChat(chatId);
+                if (reports.length > 0) {
+                    showReportListWindow(reports);
+                    return;
+                }
+            }
+            
+            // 取得對話資料
+            const { messages, modelMap } = await getTypingMindChatHistory();
+            if (messages.length < 2) { throw new Error('當前對話訊息不足，無法進行分析。'); }
+
+            // 功能 4: 僅統整「上一輪 + 上次總結」
+            const lastUserIdx = messages.map(m=>m.role).lastIndexOf('user');
+            const lastUserTurn = messages[lastUserIdx];
+            const aiTurns = [];
+            for (let i = lastUserIdx + 1; i < messages.length && messages[i].role !== 'user'; i++){
+                aiTurns.push(messages[i]);
+            }
+            if (aiTurns.length === 0) {
+                throw new Error('最新的使用者問題後沒有任何 AI 回應，無法分析。');
+            }
+            const pastReports = await getReportsForChat(chatId);
+            const prevSummary = pastReports[0]?.report.content ?? ''; // 使用新結構
+
+            // 功能 3: 產生報告標題
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const MM = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const lastUserQuestionContent = (typeof lastUserTurn.content === 'string' ? lastUserTurn.content : JSON.stringify(lastUserTurn.content)) || '';
+            const title = `${lastUserQuestionContent.slice(0, 15)}... - ${yyyy}-${MM}-${dd} ${hh}:${mm}`;
+
+            const startTime = Date.now();
+            const analysisResult = await analyzeConversation(lastUserTurn, aiTurns, prevSummary, modelMap);
+            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+            let footer = `\n\n---\n*報告生成於 ${yyyy}-${MM}-${dd} ${hh}:${mm}，耗時：${duration} 秒*`;
+            if (analysisResult.usage) {
+                footer += `\n\n*Token 消耗：輸入 ${analysisResult.usage.prompt_tokens}, 輸出 ${analysisResult.usage.completion_tokens}, 總計 ${analysisResult.usage.total_tokens}*`;
+            }
+
+            const reportObject = {
+                title: title,
+                content: analysisResult.content + footer
+            };
+
+            await saveReport(chatId, reportObject);
+            showToast('總結已完成！');
+            showReportWindow(reportObject);
+
+        } catch (error) {
+            console.error('分析擴充程式錯誤:', error);
+            if (!isAuto) { // 自動分析時不跳 alert
+                alert(`發生錯誤: ${error.message}`);
+            }
+        } finally {
+            if (mainButton) {
+                mainButton.disabled = false;
+                updateUIState();
+            }
+        }
+    }
+
+
+    // --- DATA RETRIEVAL (v3.1 - 無變更) ---
+    function getTypingMindChatHistory() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('keyval-store');
+            request.onerror = () => reject(new Error('無法開啟 TypingMind 資料庫。'));
+            request.onsuccess = (event) => {
+                const tmDb = event.target.result;
+                const chatId = getChatIdFromUrl();
+                if (!chatId) return reject(new Error('無法確定當前對話 ID。'));
+                const currentChatKey = `CHAT_${chatId}`;
+                const transaction = tmDb.transaction(['keyval'], 'readonly');
+                const objectStore = transaction.objectStore('keyval');
+                const getRequest = objectStore.get(currentChatKey);
+                getRequest.onerror = () => reject(new Error('讀取聊天資料出錯。'));
+                getRequest.onsuccess = () => {
+                    const chatData = getRequest.result;
+                    if (!chatData || !chatData.messages) return reject(new Error(`找不到對應的聊天資料。`));
+                    const allMessages = [];
+                    const modelMap = {};
+                    if (chatData.model && chatData.modelInfo) {
+                        modelMap[chatData.model] = chatData.modelInfo.title || chatData.model;
+                    }
+                    for (const turn of chatData.messages) {
+                        if (turn.role === 'user') allMessages.push(turn);
+                        else if (turn.type === 'tm_multi_responses' && turn.responses) {
+                            for (const response of turn.responses) {
+                                if (response.model && response.modelInfo) {
+                                    modelMap[response.model] = response.modelInfo.title || response.model;
+                                }
+                                if (response.messages && response.model) {
+                                    allMessages.push(...response.messages.map(msg => ({ ...msg, model: response.model })));
+                                }
+                            }
+                        } else if (turn.role === 'assistant') allMessages.push(turn);
+                    }
+                    resolve({ messages: allMessages, modelMap: modelMap });
+                };
+            };
+        });
+    }
+
+    // --- LLM INTERACTION (v4.6 - 支援多金鑰與新Prompt結構) ---
+    async function analyzeConversation(lastUserTurn, aiTurns, prevSummary, modelMap) {
+        const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
+        const temperature = parseFloat(localStorage.getItem(TEMP_STORAGE_KEY) || 1.0);
+        const top_p = parseFloat(localStorage.getItem(TOPP_STORAGE_KEY) || 1.0);
+        const reasoningEffort = localStorage.getItem(REASONING_EFFORT_STORAGE_KEY);
+        const selectedPromptTitle = localStorage.getItem(PROMPT_STORAGE_KEY) || PROMPTS[0].title;
+        const systemPrompt = PROMPTS.find(p => p.title === selectedPromptTitle)?.prompt || PROMPTS[0].prompt;
+
+        // 功能 7: 根據模型名稱選擇金鑰與API端點
+        const { apiKey, apiUrl } = pickApiKeyAndEndpoint(model);
+        if (!apiKey) {
+            throw new Error(`未設定 ${model} 對應的 API 金鑰，請至設定中新增。`);
+        }
+
+        const stringifyContent = (content) => {
+            if (content === null || content === undefined) return '';
+            if (typeof content === 'string') return content;
+            return JSON.stringify(content, null, 2);
+        };
+        
+        // 使用新傳入的參數組合 Prompt
+        const lastUserQuestion = stringifyContent(lastUserTurn.content) || '未找到原始問題。';
+        const transcript = aiTurns.map(msg => `--- 模型回答 (ID: ${msg.model || 'N/A'}) ---\n${stringifyContent(msg.content)}`).join('\n\n');
+        
+        let modelMapInfo = "這是已知模型ID與其官方名稱的對照表，請在你的報告中優先使用官方名稱：\n";
+        for (const id in modelMap) {
+            modelMapInfo += `- ${id}: ${modelMap[id]}\n`;
+        }
+
+        const userContentForAnalyzer = `${modelMapInfo}
+--- 原始問題 ---
+${lastUserQuestion}
+
+--- 本輪模型回答 ---
+${transcript}
+
+--- 過去一次統整報告 ---
+${prevSummary || '這是第一次統整，沒有過去的報告。'}
+`;
+        
+        let response;
+        let content;
+        let usage = null;
+
+        if (model.startsWith('gemini:')) {
+            // Gemini專屬處理
+            const geminiModel = model.replace('gemini:', '');
+            const geminiApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+            const geminiBody = {
+                contents: [
+                    { role: 'user', parts: [{ text: systemPrompt }] },
+                    { role: 'model', parts: [{ text: 'OK' }] },  // 模擬system prompt
+                    { role: 'user', parts: [{ text: userContentForAnalyzer }] }
+                ],
+                generationConfig: {
+                    temperature: temperature,
+                    topP: top_p
+                }
+            };
+            response = await fetch(geminiApiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(geminiBody)
+            });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`Gemini API 錯誤: ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
+            }
+            const data = await response.json();
+            content = data.candidates[0].content.parts[0].text;
+            usage = data.usageMetadata ? { prompt_tokens: data.usageMetadata.promptTokenCount, completion_tokens: data.usageMetadata.candidatesTokenCount, total_tokens: data.usageMetadata.totalTokenCount } : null;
+        } else {
+            // OpenAI / x.ai 處理
+            const requestBody = { model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }], temperature, top_p };
+            if (model.startsWith('xai:') && reasoningEffort) {  // 只在xai模型使用
+                requestBody.reasoning_effort = reasoningEffort;
+            }
+            response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify(requestBody)
+            });
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`API 錯誤 (${model}): ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
+            }
+            const data = await response.json();
+            if (!data.choices || !data.choices[0].message) {
+                throw new Error('API 回應結構無效。');
+            }
+            content = data.choices[0].message.content;
+            usage = data.usage;
+        }
+
+        return { content, usage };
+    }
+
+    // --- UI (FLOATING WINDOW & TOAST) ---
+    function createFloatingWindow(title, contentNode, options = {}) {
+        hideWindow();
+        const windowEl = document.createElement('div');
+        windowEl.id = 'analyzer-window';
+        windowEl.style.cssText = `position: fixed; top: ${options.top || '50px'}; left: ${options.left || '50px'}; width: ${options.width || '500px'}; height: ${options.height || '600px'}; z-index: 10001; background-color: #fff; border: 1px solid #ccc; border-radius: 12px; box-shadow: 0 8px 25px rgba(0,0,0,0.2); display: flex; flex-direction: column; overflow: hidden;`;
+        const header = document.createElement('div');
+        header.style.cssText = `background-color: #f0f0f0; padding: 8px 12px; cursor: move; border-bottom: 1px solid #ccc; display: flex; justify-content: space-between; align-items: center; user-select: none;`;
+        const titleEl = document.createElement('span');
+        titleEl.textContent = title;
+        titleEl.style.fontWeight = 'bold';
+        const closeButton = document.createElement('button');
+        closeButton.innerHTML = '&times;';
+        closeButton.style.cssText = `background: none; border: none; font-size: 20px; cursor: pointer;`;
+        closeButton.onclick = hideWindow;
+        header.appendChild(titleEl);
+        header.appendChild(closeButton);
+        const contentArea = document.createElement('div');
+        contentArea.style.cssText = `padding: 15px; flex-grow: 1; overflow-y: auto;`;
+        contentArea.appendChild(contentNode);
+        const resizeHandle = document.createElement('div');
+        resizeHandle.style.cssText = `position: absolute; bottom: 0; right: 0; width: 15px; height: 15px; cursor: se-resize; background: linear-gradient(135deg, transparent 50%, #aaa 50%);`;
+        windowEl.appendChild(header);
+        windowEl.appendChild(contentArea);
+        windowEl.appendChild(resizeHandle);
+        document.body.appendChild(windowEl);
+        makeDraggable(windowEl, header);
+        makeResizable(windowEl, resizeHandle);
+    }
+
+    function hideWindow() {
+        const windowEl = document.getElementById('analyzer-window');
+        if (windowEl) windowEl.remove();
+    }
+
+    // 功能 2 & 3: 顯示報告視窗 (使用報告物件，並加入複製按鈕)
+    function showReportWindow(reportObject) {
+        const contentNode = document.createElement('div');
+        
+        // 功能 2: 「複製統整回答」按鈕
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = '📋 複製權威性統整回答';
+        copyBtn.style.cssText = 'margin-bottom: 15px; padding: 8px 12px; border: 1px solid #ccc; border-radius:  Asc; background-color: #e9ecef; cursor: pointer;';
+        copyBtn.onclick = () => {
+            const reportText = reportObject.content;
+            const match = reportText.match(/### 3\. 權威性統整回答.*?(?=(###|---|$))/s);
+            const textToCopy = match ? match[0].trim() : reportText;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                showToast('已複製統整部分！');
+            }, () => {
+                showToast('複製失敗！');
+            });
+        };
+        contentNode.appendChild(copyBtn);
+
+        const reportContentDiv = document.createElement('div');
+        reportContentDiv.innerHTML = formatMarkdownToHtml(reportObject.content);
+        contentNode.appendChild(reportContentDiv);
+
+        createFloatingWindow(reportObject.title, contentNode); // 功能 3: 使用帶時間的標題
+    }
+    
+    // 功能 3: 顯示歷史報告列表 (使用報告標題)
+    function showReportListWindow(reports) {
+        const contentNode = document.createElement('div');
+        let listHtml = '<ul style="list-style: none; padding: 0; margin: 0;">';
+        reports.forEach(report => {
+            // 使用 report.report.title 作為列表項的顯示文字
+            const displayTitle = report.report.title || new Date(report.timestamp).toLocaleString();
+            listHtml += `<li data-uuid="${report.uuid}" title="${displayTitle}" style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: background-color 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${displayTitle}</li>`;
+        });
+        listHtml += '</ul>';
+        contentNode.innerHTML = listHtml;
+        contentNode.querySelectorAll('li').forEach(li => {
+            li.onmouseover = () => li.style.backgroundColor = '#f0f0f0';
+            li.onmouseout = () => li.style.backgroundColor = 'transparent';
+            li.onclick = () => {
+                const selectedReport = reports.find(r => r.uuid === li.dataset.uuid);
+                if (selectedReport) showReportWindow(selectedReport.report); // 傳遞整個 report object
+            };
+        });
+        createFloatingWindow('歷史報告清單', contentNode, { height: '400px', width: '400px' });
+    }
+
+    // 功能 5, 7, 8: 全新的設定視窗
+    function showSettingsWindow() {
+        const contentNode = document.createElement('div');
+        const currentModel = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
+        const currentTemp = localStorage.getItem(TEMP_STORAGE_KEY) || '1.0';
+        const currentTopP = localStorage.getItem(TOPP_STORAGE_KEY) || '1.0';
+        const currentReasoning = localStorage.getItem(REASONING_EFFORT_STORAGE_KEY) || 'High';
+        const currentPrompt = localStorage.getItem(PROMPT_STORAGE_KEY) || PROMPTS[0].title;
+        const openaiKey = localStorage.getItem(KEY_OPENAI) || '';
+        const xaiKey = localStorage.getItem(KEY_XAI) || '';
+        const geminiKey = localStorage.getItem(KEY_GEMINI) || '';
+        const autoAnalyze = localStorage.getItem(AUTO_ANALYZE_KEY) !== 'false';
+
+        let promptOptions = '';
+        PROMPTS.forEach(p => {
+            promptOptions += `<option value="${p.title}" ${p.title === currentPrompt ? 'selected' : ''}>${p.title}</option>`;
+        });
+        
+        contentNode.innerHTML = `
+            <style>
+              .settings-label { display: block; margin-bottom: 8px; font-weight: 500; color: #333; }
+              .settings-input, .settings-select { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc; margin-bottom: 15px; }
+              .settings-flex { display: flex; gap: 20px; }
+              .settings-flex > div { flex: 1; }
+              .settings-section-title { font-size: 1.1em; font-weight: bold; margin-top: 20px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #eee; }
+            </style>
+            
+            <div class="settings-section-title">主要設定</div>
+            <div><label class="settings-label">分析模式 (提示詞):</label><select id="prompt-select" class="settings-select">${promptOptions}</select></div>
+            <div><label for="model-input" class="settings-label">分析模型名稱:</label><input type="text" id="model-input" value="${currentModel}" placeholder="例如: gpt-4o, xai:claude-3-opus, gemini:gemini-1.5-pro" class="settings-input"></div>
+            <div><label for="reasoning-input" class="settings-label">Reasoning Effort:</label><input type="text" id="reasoning-input" value="${currentReasoning}" placeholder="例如: High, Medium, Auto" class="settings-input"></div>
+            <div class="settings-flex">
+                <div><label for="temp-input" class="settings-label">Temperature (0-2):</label><input type="number" id="temp-input" value="${currentTemp}" step="0.1" min="0" max="2" class="settings-input"></div>
+                <div><label for="topp-input" class="settings-label">Top P (0-1):</label><input type="number" id="topp-input" value="${currentTopP}" step="0.1" min="0" max="1" class="settings-input"></div>
+            </div>
+
+            <div class="settings-section-title">API 金鑰 (功能 7)</div>
+            <div><label for="openai-key" class="settings-label">OpenAI API Key:</label><input type="password" id="openai-key" value="${openaiKey}" class="settings-input"></div>
+            <div><label for="xai-key" class="settings-label">XAI/Grok API Key (模型名稱以 "xai:" 開頭):</label><input type="password" id="xai-key" value="${xaiKey}" class="settings-input"></div>
+            <div><label for="gemini-key" class="settings-label">Google Gemini API Key (模型名稱以 "gemini:" 開頭):</label><input type="password" id="gemini-key" value="${geminiKey}" class="settings-input"></div>
+
+            <div class="settings-section-title">進階功能</div>
+            <div><label class="settings-label" style="display:inline-flex; align-items:center; width: 100%;"><input type="checkbox" id="auto-analyze" ${autoAnalyze ? 'checked' : ''} style="margin-right: 10px;">啟用自動統整 (功能 5)</label></div>
+        `;
+
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: space-between; margin-top: 25px; align-items: center; border-top: 1px solid #eee; padding-top: 15px;`;
+        
+        const versionDiv = document.createElement('div');
+        versionDiv.style.cssText = `font-size: 12px; color: #999;`;
+        versionDiv.textContent = `Version: ${SCRIPT_VERSION}`;
+
+        const rightButtons = document.createElement('div');
+        rightButtons.style.cssText = 'display: flex; gap: 10px;';
+
+        const addPromptBtn = document.createElement('button');
+        addPromptBtn.innerText = '➕ 新增提示詞';
+        addPromptBtn.style.cssText = `padding: 8px 16px; border-radius: 6px; border: 1px solid #007bff; background-color: white; color: #007bff; cursor: pointer;`;
+        addPromptBtn.onclick = () => {
+            const title = prompt('請輸入新提示詞的標題:');
+            if (!title) return;
+            const p = prompt(`請輸入 "${title}" 的完整提示詞內容:`);
+            if (p) {
+                const arr = JSON.parse(localStorage.getItem(CUSTOM_PROMPTS_KEY) || '[]');
+                arr.unshift({ title: title, prompt: p });
+                localStorage.setItem(CUSTOM_PROMPTS_KEY, JSON.stringify(arr));
+                alert('已新增！請關閉並重新開啟設定視窗以查看。');
+            }
+        };
+
+        const saveButton = document.createElement('button');
+        saveButton.innerText = '儲存';
+        saveButton.style.cssText = `padding: 8px 16px; border-radius: 6px; border: none; background-color: #28a745; color: white; cursor: pointer;`;
+        saveButton.onclick = () => {
+            localStorage.setItem(PROMPT_STORAGE_KEY, contentNode.querySelector('#prompt-select').value);
+            localStorage.setItem(MODEL_STORAGE_KEY, contentNode.querySelector('#model-input').value);
+            localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, contentNode.querySelector('#reasoning-input').value);
+            localStorage.setItem(TEMP_STORAGE_KEY, contentNode.querySelector('#temp-input').value);
+            localStorage.setItem(TOPP_STORAGE_KEY, contentNode.querySelector('#topp-input').value);
+            localStorage.setItem(KEY_OPENAI, contentNode.querySelector('#openai-key').value);
+            localStorage.setItem(KEY_XAI, contentNode.querySelector('#xai-key').value);
+            localStorage.setItem(KEY_GEMINI, contentNode.querySelector('#gemini-key').value);
+            localStorage.setItem(AUTO_ANALYZE_KEY, contentNode.querySelector('#auto-analyze').checked);
+            hideWindow();
+            alert(`設定已儲存！`);
+        };
+        
+        rightButtons.appendChild(addPromptBtn);
+        rightButtons.appendChild(saveButton);
+        buttonContainer.appendChild(versionDiv);
+        buttonContainer.appendChild(rightButtons);
+        contentNode.appendChild(buttonContainer);
+
+        createFloatingWindow('設定', contentNode, {width: '600px', height: 'auto'});
+    }
+    
+    // 功能 1: Win 11 通知
+    function showToast(message) {
+        let toast = document.getElementById('analyzer-toast');
+        if (toast) toast.remove();
+        toast = document.createElement('div');
+        toast.id = 'analyzer-toast';
+        toast.textContent = message;
+        toast.style.cssText = `position: fixed; bottom: 30px; right: 200px; background-color: #28a745; color: white; padding: 12px 20px; border-radius: 8px; z-index: 10002; font-size: 14px; opacity: 0; transition: opacity 0.5s, transform 0.5s; transform: translateY(20px);`;
+        document.body.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateY(0)';
+        }, 10);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(20px)';
+            setTimeout(() => toast.remove(), 500);
+        }, 3000);
+
+        // 新增系統通知
+        if (window.Notification) {
+            if (Notification.permission === 'granted') {
+                new Notification('TypingMind 統整通知', { body: message });
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(p => {
+                    if (p === 'granted') {
+                        new Notification('TypingMind 統整通知', { body: message });
+                    }
+                });
+            }
+        }
+    }
+
+
+    // --- HELPERS ---
+    function pickApiKeyAndEndpoint(modelName) {
+        // Gemini API endpoint is special and handled by caller
+        if (modelName.startsWith('xai:')) {
+            return { apiKey: localStorage.getItem(KEY_XAI), apiUrl: 'https://api.x.ai/v1/chat/completions' };
+        }
+        if (modelName.startsWith('gemini:')) {
+            // Note: Gemini API requires key in URL, this is a placeholder. Actual fetch must construct it.
+            // Let's simplify and handle it here completely.
+            const geminiKey = localStorage.getItem(KEY_GEMINI);
+            return { apiKey: geminiKey, apiUrl: '' };  // apiUrl在analyzeConversation中動態構建
+        }
+        // Default to OpenAI
+        return { apiKey: localStorage.getItem(KEY_OPENAI), apiUrl: 'https://api.openai.com/v1/chat/completions' };
+    }
+
+    function makeDraggable(element, handle) { let p1=0,p2=0,p3=0,p4=0; handle.onmousedown=e=>{e.preventDefault();p3=e.clientX;p4=e.clientY;document.onmouseup=()=>{document.onmouseup=null;document.onmousemove=null;};document.onmousemove=e=>{e.preventDefault();p1=p3-e.clientX;p2=p4-e.clientY;p3=e.clientX;p4=e.clientY;element.style.top=(element.offsetTop-p2)+"px";element.style.left=(element.offsetLeft-p1)+"px";};};}
+    function makeResizable(element, handle) { handle.onmousedown=e=>{e.preventDefault();const sX=e.clientX,sY=e.clientY,sW=parseInt(document.defaultView.getComputedStyle(element).width,10),sH=parseInt(document.defaultView.getComputedStyle(element).height,10);document.onmousemove=e=>{element.style.width=(sW+e.clientX-sX)+'px';element.style.height=(sH+e.clientY-sY)+'px';};document.onmouseup=()=>{document.onmousemove=null;document.onmouseup=null;};};}
+    function formatMarkdownToHtml(markdownText) { 
+        if (!markdownText) return '無分析內容。'; 
+        let html = markdownText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); 
+        html = html.replace(/^### (.*$)/gim, '<h3 style="margin-bottom: 10px; margin-top: 20px; color: #333;">$1</h3>')
+                   .replace(/^## (.*$)/gim, '<h2 style="margin-bottom: 15px; margin-top: 25px; border-bottom: 1px solid #eee; padding-bottom: 5px; color: #111;">$1</h2>')
+                   .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+                   .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                   .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                   .replace(/^\s*[-*] (.*$)/gim, '<li style="margin-bottom: 8px;">$1</li>')
+                   .replace(/^\s*```(\w+)?\n([\s\S]*?)\n```/gim, '<pre style="background: #f4f4f4; padding: 10px; border-radius: 5px;"><code>$2</code></pre>')
+                   .replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2" style="color: #007bff; text-decoration: none;">$1</a>');
+        html = html.replace(/<li>(.*?)<\/li>\s*(?=<li)/g, '<li>$1</li>').replace(/(<li>.*?<\/li>)/g, '<ul style="padding-left: 20px; margin-top: 10px;">$1</ul>').replace(/<\/ul>\s*<ul>/g, ''); 
+        return `<div class="markdown-body" style="line-height: 1.7; font-size: 15px;">${html.replace(/\n/g, '<br>')}</div>`;
+    }
+    function getChatIdFromUrl() { const hash = window.location.hash; return (hash && hash.startsWith('#chat=')) ? hash.substring('#chat='.length) : null; }
+    
+    // --- INITIALIZATION ---
+    async function initialize() {
+        console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
+        await initDB();
+        
+        // UI State update on URL change
+        let lastSeenChatId = null;
+        setInterval(() => {
+            const currentChatId = getChatIdFromUrl();
+            if (currentChatId !== lastSeenChatId) {
+                lastSeenChatId = currentChatId;
+                updateUIState();
+            }
+        }, 500);
+
+        // UI Creation and Auto-analysis trigger
+        let autoAnalyzeTimeout = null;
+        const observer = new MutationObserver((mutations) => {
+            if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
+                createUI();
+            }
+            
+            // 功能 5: 自動統整
+            const autoAnalyzeEnabled = localStorage.getItem(AUTO_ANALYZE_KEY) !== 'false';
+            if (!autoAnalyzeEnabled) return;
+
+            for(const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                     const isGenerating = document.querySelector('[d="M12 4.5v3m0 9v3m4.5-10.5l-2.12 2.12M6.62 17.38l-2.12 2.12M19.5 12h-3m-9 0H3M17.38 6.62l-2.12 2.12M6.62 6.62l2.12 2.12"]'); // Look for the "generating" SVG
+                     const mainButton = document.getElementById('analyzer-main-button');
+                     
+                     // If we detect a change AND the generating spinner is gone, it might be complete.
+                     if(!isGenerating && mainButton && !mainButton.disabled) {
+                         clearTimeout(autoAnalyzeTimeout);
+                         autoAnalyzeTimeout = setTimeout(() => {
+                             // Double check if it's really finished before triggering
+                             if(!document.querySelector('[d="M12 4.5v3m0 9v3m4.5-10.5l-2.12 2.12M6.62 17.38l-2.12 2.12M19.5 12h-3m-9 0H3M17.38 6.62l-2.12 2.12M6.62 6.62l2.12 2.12"]')) {
+                                 console.log("自動統整觸發...");
+                                 handleAnalysisRequest(false, true);
+                             }
+                         }, 2500); // Wait 2.5 seconds to be sure
+                     }
+                }
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    initialize();
+
+})();
