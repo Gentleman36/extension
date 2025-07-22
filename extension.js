@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TypingMind 對話分析與整合器
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      4.6
 // @description  分析、整合並驗證 TypingMind 對話中的多模型回應，提供多提示詞切換、版本化歷史報告、效能數據及可自訂參數的懸浮視窗介面。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
@@ -12,14 +12,18 @@
     'use strict';
 
     // --- CONFIGURATION ---
-    const SCRIPT_VERSION = '3.1';
+    const SCRIPT_VERSION = '4.6';
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o';
     const API_KEY_STORAGE_KEY = 'typingmind_analyzer_openai_api_key';
+    const GROQ_API_KEY_STORAGE_KEY = 'typingmind_analyzer_groq_api_key';
+    const GOOGLE_API_KEY_STORAGE_KEY = 'typingmind_analyzer_google_api_key';
     const MODEL_STORAGE_KEY = 'typingmind_analyzer_model';
     const TEMP_STORAGE_KEY = 'typingmind_analyzer_temperature';
     const TOPP_STORAGE_KEY = 'typingmind_analyzer_top_p';
     const REASONING_EFFORT_STORAGE_KEY = 'typingmind_analyzer_reasoning_effort';
     const PROMPT_STORAGE_KEY = 'typingmind_analyzer_prompt_title';
+    const AUTO_ANALYZE_STORAGE_KEY = 'typingmind_analyzer_auto_analyze';
+    const CUSTOM_PROMPT_STORAGE_KEY = 'typingmind_analyzer_custom_prompt';
 
     // --- PROMPT LIBRARY ---
     const PROMPTS = [
@@ -51,13 +55,25 @@
   (使用列表分別陳述每個模型回答的缺點。)
 - ### 結論與建議
   (提供最終的裁決總結或改進建議。)`
+        },
+        {
+            title: "數學領域統整",
+            prompt: `你是一位數學專家。基於使用者提出的數學問題，對多個AI模型的回答進行統整。只針對上一輪問題、AI回答及過去總結。輸出結構：### 1. 問題簡述\n### 2. 模型比較\n### 3. 統整解答 (包含步驟、證明、驗證)`
+        },
+        {
+            title: "程式領域統整",
+            prompt: `你是一位程式專家。基於使用者提出的程式問題，對多個AI模型的回答進行統整。只針對上一輪問題、AI回答及過去總結。輸出結構：### 1. 問題簡述\n### 2. 模型比較\n### 3. 統整程式碼與解釋 (包含程式碼、註解、測試)`
+        },
+        {
+            title: "自定義提示詞",
+            prompt: "" // Will be filled from storage
         }
     ];
 
     // --- DATABASE CONFIGURATION ---
     const DB_NAME = 'TypingMindAnalyzerDB';
     const REPORT_STORE_NAME = 'analysis_reports';
-    const DB_VERSION = 2; // Bump version for schema change
+    const DB_VERSION = 3; // Bumped for title addition
     let db;
 
     // --- DATABASE HELPERS ---
@@ -67,8 +83,7 @@
             request.onupgradeneeded = (event) => {
                 const dbInstance = event.target.result;
                 const oldVersion = event.oldVersion;
-                if (oldVersion < 2) {
-                    // Schema migration for report versioning
+                if (oldVersion < 3) {
                     if (dbInstance.objectStoreNames.contains(REPORT_STORE_NAME)) {
                         dbInstance.deleteObjectStore(REPORT_STORE_NAME);
                     }
@@ -84,7 +99,7 @@
         });
     }
 
-    function saveReport(chatId, reportData) {
+    function saveReport(chatId, reportData, title) {
         return new Promise((resolve, reject) => {
             if (!db) return reject('資料庫未初始化。');
             const transaction = db.transaction([REPORT_STORE_NAME], 'readwrite');
@@ -92,6 +107,7 @@
             const report = {
                 uuid: self.crypto.randomUUID(),
                 chatId: chatId,
+                title: title,
                 report: reportData,
                 timestamp: new Date()
             };
@@ -118,7 +134,7 @@
         if (document.getElementById('analyzer-controls-container')) return;
         const container = document.createElement('div');
         container.id = 'analyzer-controls-container';
-        container.style.cssText = `position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`;
+        container.style.cssText = `position: fixed; bottom: 80px; right: 20px; z-index: 9999; display: flex; gap: 10px; align-items: center;`; // Moved up
         const mainButton = document.createElement('button');
         mainButton.id = 'analyzer-main-button';
         mainButton.style.cssText = `background-color: #4A90E2; color: white; border: none; border-radius: 8px; padding: 10px 15px; font-size: 14px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: all 0.3s; min-width: 120px; text-align: center;`;
@@ -175,32 +191,50 @@
             }
             const chatId = getChatIdFromUrl();
             if (!chatId) { throw new Error('無法獲取對話 ID。'); }
-            if (!isReanalysis) {
-                const reports = await getReportsForChat(chatId);
-                if (reports.length > 0) {
-                    showReportListWindow(reports);
-                    return;
-                }
+            const reports = await getReportsForChat(chatId);
+            if (!isReanalysis && reports.length > 0) {
+                showReportListWindow(reports);
+                return;
             }
-            let apiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
-            if (!apiKey) {
-                apiKey = window.prompt('請輸入您的 OpenAI API 金鑰：');
-                if (!apiKey) throw new Error('未提供 API 金鑰。');
-                localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
-            }
+            const analysisTime = new Date();
             const { messages, modelMap } = await getTypingMindChatHistory();
             if (messages.length < 2) { throw new Error('當前對話訊息不足，無法進行分析。'); }
+            const lastUserQuestion = messages.slice().reverse().find(m => m.role === 'user')?.content || '未找到原始問題。';
+            const questionSummary = typeof lastUserQuestion === 'string' ? lastUserQuestion.substring(0, 15) + (lastUserQuestion.length > 15 ? '...' : '') : '未知問題';
+            const formattedTime = `${analysisTime.getFullYear()}-${String(analysisTime.getMonth() + 1).padStart(2, '0')}-${String(analysisTime.getDate()).padStart(2, '0')} ${String(analysisTime.getHours()).padStart(2, '0')}:${String(analysisTime.getMinutes()).padStart(2, '0')}`;
+            const reportTitle = `${questionSummary} - ${formattedTime}`;
+
+            let apiKey;
+            const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
+            if (model.startsWith('grok-')) {
+                apiKey = localStorage.getItem(GROQ_API_KEY_STORAGE_KEY);
+            } else if (model.startsWith('gemini-')) {
+                apiKey = localStorage.getItem(GOOGLE_API_KEY_STORAGE_KEY);
+            } else {
+                apiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
+            }
+            if (!apiKey) {
+                apiKey = window.prompt('請輸入您的 API 金鑰：');
+                if (!apiKey) throw new Error('未提供 API 金鑰。');
+                if (model.startsWith('grok-')) {
+                    localStorage.setItem(GROQ_API_KEY_STORAGE_KEY, apiKey);
+                } else if (model.startsWith('gemini-')) {
+                    localStorage.setItem(GOOGLE_API_KEY_STORAGE_KEY, apiKey);
+                } else {
+                    localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+                }
+            }
             const startTime = Date.now();
-            const analysisResult = await analyzeConversation(apiKey, messages, modelMap);
+            const analysisResult = await analyzeConversation(apiKey, messages, modelMap, reports, isReanalysis);
             const duration = ((Date.now() - startTime) / 1000).toFixed(2);
             let footer = `\n\n---\n*報告生成耗時：${duration} 秒*`;
             if (analysisResult.usage) {
                 footer += `\n\n*Token 消耗：輸入 ${analysisResult.usage.prompt_tokens}, 輸出 ${analysisResult.usage.completion_tokens}, 總計 ${analysisResult.usage.total_tokens}*`;
             }
             const finalReportText = analysisResult.content + footer;
-            await saveReport(chatId, finalReportText);
+            await saveReport(chatId, finalReportText, reportTitle);
             showToast('總結已完成！');
-            showReportWindow(finalReportText);
+            showReportWindow(finalReportText, reportTitle);
         } catch (error) {
             console.error('分析擴充程式錯誤:', error);
             alert(`發生錯誤: ${error.message}`);
@@ -254,44 +288,87 @@
     }
 
     // --- LLM INTERACTION ---
-    async function analyzeConversation(apiKey, messages, modelMap) {
+    async function analyzeConversation(apiKey, messages, modelMap, reports, isReanalysis) {
         const model = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_ANALYZER_MODEL;
         const temperature = parseFloat(localStorage.getItem(TEMP_STORAGE_KEY) || 1.0);
         const top_p = parseFloat(localStorage.getItem(TOPP_STORAGE_KEY) || 1.0);
         const reasoningEffort = localStorage.getItem(REASONING_EFFORT_STORAGE_KEY);
         const selectedPromptTitle = localStorage.getItem(PROMPT_STORAGE_KEY) || PROMPTS[0].title;
-        const systemPrompt = PROMPTS.find(p => p.title === selectedPromptTitle)?.prompt || PROMPTS[0].prompt;
+        let systemPrompt = PROMPTS.find(p => p.title === selectedPromptTitle)?.prompt || PROMPTS[0].prompt;
+        if (selectedPromptTitle === "自定義提示詞") {
+            systemPrompt = localStorage.getItem(CUSTOM_PROMPT_STORAGE_KEY) || systemPrompt;
+        }
 
         const stringifyContent = (content) => {
             if (content === null || content === undefined) return '';
             if (typeof content === 'string') return content;
             return JSON.stringify(content, null, 2);
         };
-        
-        const lastUserQuestion = stringifyContent(messages.find(m => m.role === 'user')?.content) || '未找到原始問題。';
-        const transcript = messages.filter(msg => msg.role !== 'user').map(msg => `--- 模型回答 (ID: ${msg.model || 'N/A'}) ---\n${stringifyContent(msg.content)}`).join('\n\n');
-        
+
+        // Only last round: last user and following assistants
+        const lastUserIndex = messages.map(m => m.role).lastIndexOf('user');
+        const lastRoundMessages = messages.slice(lastUserIndex);
+        const lastUserQuestion = stringifyContent(lastRoundMessages[0]?.content) || '未找到原始問題。';
+        const transcript = lastRoundMessages.slice(1).map(msg => `--- 模型回答 (ID: ${msg.model || 'N/A'}) ---\n${stringifyContent(msg.content)}`).join('\n\n');
+
+        // Past summary if exists
+        let pastSummary = '';
+        if (reports.length > 0 && isReanalysis) {
+            const latestReport = reports[0].report;
+            const summaryStart = latestReport.indexOf('### 3. 權威性統整回答');
+            if (summaryStart !== -1) {
+                pastSummary = latestReport.substring(summaryStart).split('---')[0].trim();
+            }
+            pastSummary = `\n\n--- 過去總結 ---\n${pastSummary}`;
+        }
+
         let modelMapInfo = "這是已知模型ID與其官方名稱的對照表，請在你的報告中優先使用官方名稱：\n";
         for (const id in modelMap) {
             modelMapInfo += `- ${id}: ${modelMap[id]}\n`;
         }
 
-        const userContentForAnalyzer = `${modelMapInfo}\n--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}`;
-        
-        const requestBody = { model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }], temperature, top_p };
-        if (reasoningEffort) { requestBody.reasoning_effort = reasoningEffort; }
+        const userContentForAnalyzer = `${modelMapInfo}\n--- 原始問題 ---\n${lastUserQuestion}\n\n--- 對話文字稿 ---\n${transcript}${pastSummary}`;
 
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        let endpoint, headers, body;
+        if (model.startsWith('grok-')) {
+            endpoint = 'https://api.groq.com/openai/v1/chat/completions';
+            headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
+            body = { model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }], temperature, top_p };
+        } else if (model.startsWith('gemini-')) {
+            endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+            headers = { 'Content-Type': 'application/json' };
+            body = {
+                contents: [
+                    { role: 'user', parts: [{ text: systemPrompt + '\n\n' + userContentForAnalyzer }] }
+                ],
+                generationConfig: { temperature, topP: top_p }
+            };
+        } else {
+            endpoint = 'https://api.openai.com/v1/chat/completions';
+            headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
+            body = { model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContentForAnalyzer }], temperature, top_p };
+        }
+        if (reasoningEffort && !model.startsWith('gemini-')) { body.reasoning_effort = reasoningEffort; }
+
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-            body: JSON.stringify(requestBody)
+            headers: headers,
+            body: JSON.stringify(body)
         });
         if (!response.ok) {
             const errorData = await response.json();
             throw new Error(`API 錯誤 (${model}): ${response.status} - ${errorData.error?.message ?? '未知錯誤'}`);
         }
         const data = await response.json();
-        return { content: data.choices[0].message.content, usage: data.usage };
+        let content, usage;
+        if (model.startsWith('gemini-')) {
+            content = data.candidates[0].content.parts[0].text;
+            usage = data.usageMetadata ? { prompt_tokens: data.usageMetadata.promptTokenCount, completion_tokens: data.usageMetadata.candidatesTokenCount, total_tokens: data.usageMetadata.totalTokenCount } : null;
+        } else {
+            content = data.choices[0].message.content;
+            usage = data.usage;
+        }
+        return { content, usage };
     }
 
     // --- UI (FLOATING WINDOW & TOAST) ---
@@ -329,19 +406,26 @@
         if (windowEl) windowEl.remove();
     }
 
-    function showReportWindow(reportText) {
+    function showReportWindow(reportText, reportTitle) {
         const contentNode = document.createElement('div');
         contentNode.innerHTML = formatMarkdownToHtml(reportText);
-        createFloatingWindow('整合分析報告', contentNode);
+        const copyButton = document.createElement('button');
+        copyButton.innerText = '複製統整回答';
+        copyButton.style.cssText = `margin-top: 10px; padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;`;
+        copyButton.onclick = () => {
+            const sections = reportText.split('### 3. 權威性統整回答');
+            const integratedPart = sections.length > 1 ? sections[1].split('---')[0].trim() : '';
+            navigator.clipboard.writeText(integratedPart).then(() => showToast('已複製統整部分！'));
+        };
+        contentNode.appendChild(copyButton);
+        createFloatingWindow(reportTitle || '整合分析報告', contentNode);
     }
-    
+
     function showReportListWindow(reports) {
         const contentNode = document.createElement('div');
         let listHtml = '<ul style="list-style: none; padding: 0; margin: 0;">';
         reports.forEach(report => {
-            const reportDate = new Date(report.timestamp);
-            const formattedDate = `${reportDate.getFullYear()}-${String(reportDate.getMonth() + 1).padStart(2, '0')}-${String(reportDate.getDate()).padStart(2, '0')} ${String(reportDate.getHours()).padStart(2, '0')}:${String(reportDate.getMinutes()).padStart(2, '0')}`;
-            listHtml += `<li data-uuid="${report.uuid}" style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: background-color 0.2s;">${formattedDate} 的報告</li>`;
+            listHtml += `<li data-uuid="${report.uuid}" style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: background-color 0.2s;">${report.title || '未知標題'}</li>`;
         });
         listHtml += '</ul>';
         contentNode.innerHTML = listHtml;
@@ -350,7 +434,7 @@
             li.onmouseout = () => li.style.backgroundColor = 'transparent';
             li.onclick = () => {
                 const selectedReport = reports.find(r => r.uuid === li.dataset.uuid);
-                if(selectedReport) showReportWindow(selectedReport.report);
+                if(selectedReport) showReportWindow(selectedReport.report, selectedReport.title);
             };
         });
         createFloatingWindow('歷史報告清單', contentNode, { height: '400px', width: '350px' });
@@ -363,7 +447,9 @@
         const currentTopP = localStorage.getItem(TOPP_STORAGE_KEY) || '1.0';
         const currentReasoning = localStorage.getItem(REASONING_EFFORT_STORAGE_KEY) || 'High';
         const currentPrompt = localStorage.getItem(PROMPT_STORAGE_KEY) || PROMPTS[0].title;
-        
+        const currentAutoAnalyze = localStorage.getItem(AUTO_ANALYZE_STORAGE_KEY) !== 'false'; // Default true
+        const currentCustomPrompt = localStorage.getItem(CUSTOM_PROMPT_STORAGE_KEY) || '';
+
         let promptOptions = '';
         PROMPTS.forEach(p => {
             promptOptions += `<option value="${p.title}" ${p.title === currentPrompt ? 'selected' : ''}>${p.title}</option>`;
@@ -371,12 +457,22 @@
 
         contentNode.innerHTML = `
             <div><label style="display: block; margin-bottom: 8px;">分析模式 (提示詞):</label><select id="prompt-select" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;">${promptOptions}</select></div>
-            <div style="margin-top: 15px;"><label for="model-input" style="display: block; margin-bottom: 8px;">分析模型名稱:</label><input type="text" id="model-input" value="${currentModel}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
+            <div id="custom-prompt-container" style="display: ${currentPrompt === '自定義提示詞' ? 'block' : 'none'}; margin-top: 15px;"><label for="custom-prompt" style="display: block; margin-bottom: 8px;">自定義提示詞:</label><textarea id="custom-prompt" style="width: 100%; height: 100px; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;">${currentCustomPrompt}</textarea></div>
+            <div style="margin-top: 15px;"><label for="model-input" style="display: block; margin-bottom: 8px;">分析模型名稱 (e.g., gpt-4o, grok-beta, gemini-1.5-pro):</label><input type="text" id="model-input" value="${currentModel}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
+            <div style="margin-top: 15px;"><label for="openai-key-input" style="display: block; margin-bottom: 8px;">OpenAI API Key:</label><input type="text" id="openai-key-input" value="${localStorage.getItem(API_KEY_STORAGE_KEY) || ''}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
+            <div style="margin-top: 15px;"><label for="groq-key-input" style="display: block; margin-bottom: 8px;">Groq (XAI) API Key:</label><input type="text" id="groq-key-input" value="${localStorage.getItem(GROQ_API_KEY_STORAGE_KEY) || ''}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
+            <div style="margin-top: 15px;"><label for="google-key-input" style="display: block; margin-bottom: 8px;">Google (Gemini) API Key:</label><input type="text" id="google-key-input" value="${localStorage.getItem(GOOGLE_API_KEY_STORAGE_KEY) || ''}" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
             <div style="margin-top: 15px;"><label for="reasoning-input" style="display: block; margin-bottom: 8px;">Reasoning Effort:</label><input type="text" id="reasoning-input" value="${currentReasoning}" placeholder="例如: High, Medium, Auto" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
             <div style="display: flex; gap: 20px; margin-top: 15px;">
                 <div style="flex: 1;"><label for="temp-input" style="display: block; margin-bottom: 8px;">Temperature (0-2):</label><input type="number" id="temp-input" value="${currentTemp}" step="0.1" min="0" max="2" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
                 <div style="flex: 1;"><label for="topp-input" style="display: block; margin-bottom: 8px;">Top P (0-1):</label><input type="number" id="topp-input" value="${currentTopP}" step="0.1" min="0" max="1" style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 4px; border: 1px solid #ccc;"></div>
-            </div>`;
+            </div>
+            <div style="margin-top: 15px;"><label><input type="checkbox" id="auto-analyze" ${currentAutoAnalyze ? 'checked' : ''}> 啟用自動統整 (所有模型回答完後)</label></div>`;
+        const promptSelect = contentNode.querySelector('#prompt-select');
+        promptSelect.onchange = () => {
+            const customContainer = contentNode.querySelector('#custom-prompt-container');
+            customContainer.style.display = (promptSelect.value === '自定義提示詞') ? 'block' : 'none';
+        };
         const buttonContainer = document.createElement('div');
         buttonContainer.style.cssText = `display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; align-items: center; border-top: 1px solid #eee; padding-top: 15px;`;
         const versionDiv = document.createElement('div');
@@ -385,9 +481,16 @@
         const saveHandler = () => {
             localStorage.setItem(PROMPT_STORAGE_KEY, contentNode.querySelector('#prompt-select').value);
             localStorage.setItem(MODEL_STORAGE_KEY, contentNode.querySelector('#model-input').value);
+            localStorage.setItem(API_KEY_STORAGE_KEY, contentNode.querySelector('#openai-key-input').value);
+            localStorage.setItem(GROQ_API_KEY_STORAGE_KEY, contentNode.querySelector('#groq-key-input').value);
+            localStorage.setItem(GOOGLE_API_KEY_STORAGE_KEY, contentNode.querySelector('#google-key-input').value);
             localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, contentNode.querySelector('#reasoning-input').value);
             localStorage.setItem(TEMP_STORAGE_KEY, contentNode.querySelector('#temp-input').value);
             localStorage.setItem(TOPP_STORAGE_KEY, contentNode.querySelector('#topp-input').value);
+            localStorage.setItem(AUTO_ANALYZE_STORAGE_KEY, contentNode.querySelector('#auto-analyze').checked);
+            if (contentNode.querySelector('#prompt-select').value === '自定義提示詞') {
+                localStorage.setItem(CUSTOM_PROMPT_STORAGE_KEY, contentNode.querySelector('#custom-prompt').value);
+            }
             hideWindow();
             alert(`設定已儲存！`);
         };
@@ -400,7 +503,7 @@
         contentNode.appendChild(buttonContainer);
         createFloatingWindow('設定', contentNode);
     }
-    
+
     function showToast(message) {
         let toast = document.getElementById('analyzer-toast');
         if (toast) toast.remove();
@@ -418,18 +521,48 @@
             toast.style.transform = 'translateY(20px)';
             setTimeout(() => toast.remove(), 500);
         }, 3000);
+
+        // Windows notification
+        if (Notification.permission === 'granted') {
+            new Notification('TypingMind Analyzer', { body: message });
+        } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then(permission => {
+                if (permission === 'granted') {
+                    new Notification('TypingMind Analyzer', { body: message });
+                }
+            });
+        }
     }
 
     function makeDraggable(element, handle) { let p1=0,p2=0,p3=0,p4=0; handle.onmousedown=e=>{e.preventDefault();p3=e.clientX;p4=e.clientY;document.onmouseup=()=>{document.onmouseup=null;document.onmousemove=null;};document.onmousemove=e=>{e.preventDefault();p1=p3-e.clientX;p2=p4-e.clientY;p3=e.clientX;p4=e.clientY;element.style.top=(element.offsetTop-p2)+"px";element.style.left=(element.offsetLeft-p1)+"px";};};}
     function makeResizable(element, handle) { handle.onmousedown=e=>{e.preventDefault();const sX=e.clientX,sY=e.clientY,sW=parseInt(document.defaultView.getComputedStyle(element).width,10),sH=parseInt(document.defaultView.getComputedStyle(element).height,10);document.onmousemove=e=>{element.style.width=(sW+e.clientX-sX)+'px';element.style.height=(sH+e.clientY-sY)+'px';};document.onmouseup=()=>{document.onmousemove=null;document.onmouseup=null;};};}
     function formatMarkdownToHtml(markdownText) { if (!markdownText) return '無分析內容。'; let html = markdownText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); html = html.replace(/^### (.*$)/gim, '<h3 style="margin-bottom: 10px; margin-top: 20px; color: #333;">$1</h3>').replace(/^## (.*$)/gim, '<h2 style="margin-bottom: 15px; margin-top: 25px; border-bottom: 1px solid #eee; padding-bottom: 5px; color: #111;">$1</h2>').replace(/^# (.*$)/gim, '<h1>$1</h1>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\*(.*?)\*/g, '<em>$1</em>').replace(/^\s*[-*] (.*$)/gim, '<li style="margin-bottom: 8px;">$1</li>'); html = html.replace(/<li>(.*?)<\/li>\s*(?=<li)/g, '<li>$1</li>').replace(/(<li>.*?<\/li>)/g, '<ul style="padding-left: 20px; margin-top: 10px;">$1</ul>').replace(/<\/ul>\s*<ul>/g, ''); return `<div class="markdown-body" style="line-height: 1.7; font-size: 15px;">${html.replace(/\n/g, '<br>')}</div>`;}
     function getChatIdFromUrl() { const hash = window.location.hash; return (hash && hash.startsWith('#chat=')) ? hash.substring('#chat='.length) : null; }
-    
+
+    // --- AUTO ANALYZE ---
+    function setupAutoAnalyze() {
+        const observer = new MutationObserver(async () => {
+            if (localStorage.getItem(AUTO_ANALYZE_STORAGE_KEY) !== 'false') {
+                const { messages } = await getTypingMindChatHistory().catch(() => ({ messages: [] }));
+                const lastTurn = messages[messages.length - 1];
+                if (lastTurn && lastTurn.type === 'tm_multi_responses' && lastTurn.responses && lastTurn.responses.every(r => r.messages && r.messages.length > 0)) {
+                    handleAnalysisRequest(false);
+                }
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
     // --- INITIALIZATION ---
     async function initialize() {
         console.log(`TypingMind Analyzer Script v${SCRIPT_VERSION} Initialized`);
         await initDB();
-        
+
+        // Request notification permission
+        if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+            Notification.requestPermission();
+        }
+
         // More robust state update logic
         let lastSeenChatId = null;
         setInterval(() => {
@@ -446,6 +579,8 @@
             }
         });
         observer.observe(document.body, { childList: true, subtree: true });
+
+        setupAutoAnalyze();
     }
 
     initialize();
