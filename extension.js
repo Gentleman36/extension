@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TypingMind 對話分析與整合器
 // @namespace    http://tampermonkey.net/
-// @version      4.7  // 更新版本以反映修正
+// @version      4.8  // 更新版本以反映UI修正
 // @description  分析、整合並驗證 TypingMind 對話中的多模型回應，提供多金鑰、自訂提示詞、自動統整與 Win11 通知等功能。
 // @author       Gemini & Your Name
 // @match        https://www.typingmind.com/*
@@ -12,7 +12,7 @@
     'use strict';
 
     // --- CONFIGURATION (v4.6) ---
-    const SCRIPT_VERSION = '4.7';  // 更新版本
+    const SCRIPT_VERSION = '4.8';  // 更新版本
     const DEFAULT_ANALYZER_MODEL = 'gpt-4o';
 
     // 金鑰儲存 (支援多模型)
@@ -45,7 +45,7 @@
 (在此處用一兩句話簡要總結哪個模型的回答總體上更佳，並陳述最核心的理由。)
 
 ### 3. 權威性統整回答 (最重要)
-(這是報告的核心。請將所有模型回答中的正確、互補的資訊，以及「過去的統整報告」內容，進行嚴格的事實查核與交叉驗證後，融合成一份單一、全面、且權威性的最终答案。這份答案應該要超越任何單一模型的回答，成為使用者唯一需要閱讀的完整內容。如果不同模型存在無法調和的矛盾，請在此處明確指出。)`
+(這是報告的核心。請將所有模型回答中的正確、互補的資訊，以及「過去的統整報告」內容，進行嚴格的事實查核與交叉驗證後，融合成一份單一、全面、且權威性的最終答案。這份答案應該要超越任何單一模型的回答，成為使用者唯一需要閱讀的完整內容。如果不同模型存在無法調和的矛盾，請在此處明確指出。)`
         },
         {
             title: "優劣比較 (v2.x)",
@@ -466,7 +466,7 @@ ${prevSummary || '這是第一次統整，沒有過去的報告。'}
         // 功能 2: 「複製統整回答」按鈕
         const copyBtn = document.createElement('button');
         copyBtn.textContent = '📋 複製權威性統整回答';
-        copyBtn.style.cssText = 'margin-bottom: 15px; padding: 8px 12px; border: 1px solid #ccc; border-radius:  Asc; background-color: #e9ecef; cursor: pointer;';
+        copyBtn.style.cssText = 'margin-bottom: 15px; padding: 8px 12px; border: 1px solid #ccc; border-radius: 6px; background-color: #e9ecef; cursor: pointer;';
         copyBtn.onclick = () => {
             const reportText = reportObject.content;
             const match = reportText.match(/### 3\. 權威性統整回答.*?(?=(###|---|$))/s);
@@ -687,12 +687,29 @@ ${prevSummary || '這是第一次統整，沒有過去的報告。'}
             }
         }, 500);
 
-        // UI Creation and Auto-analysis trigger
-        let autoAnalyzeTimeout = null;
-        const observer = new MutationObserver((mutations) => {
+        // 初始UI檢查與輪詢（修正按鈕不顯示問題）
+        function checkAndCreateUI() {
             if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
                 createUI();
+                updateUIState();  // 立即更新狀態
+                console.log('UI 已創建');
             }
+        }
+        checkAndCreateUI();  // 立即檢查
+        let pollCount = 0;
+        const pollInterval = setInterval(() => {
+            checkAndCreateUI();
+            pollCount++;
+            if (pollCount >= 5 || document.getElementById('analyzer-controls-container')) {
+                clearInterval(pollInterval);
+            }
+        }, 500);
+
+        // UI Creation and Auto-analysis trigger
+        let autoAnalyzeTimeout = null;
+        let lastMessageCount = 0;  // 用於fallback偵測
+        const observer = new MutationObserver((mutations) => {
+            checkAndCreateUI();  // 在Observer中額外檢查UI
             
             // 功能 5: 自動統整
             const autoAnalyzeEnabled = localStorage.getItem(AUTO_ANALYZE_KEY) !== 'false';
@@ -700,20 +717,29 @@ ${prevSummary || '這是第一次統整，沒有過去的報告。'}
 
             for(const mutation of mutations) {
                 if (mutation.type === 'childList') {
-                     const isGenerating = document.querySelector('[d="M12 4.5v3m0 9v3m4.5-10.5l-2.12 2.12M6.62 17.38l-2.12 2.12M19.5 12h-3m-9 0H3M17.38 6.62l-2.12 2.12M6.62 6.62l2.12 2.12"]'); // Look for the "generating" SVG
-                     const mainButton = document.getElementById('analyzer-main-button');
-                     
-                     // If we detect a change AND the generating spinner is gone, it might be complete.
-                     if(!isGenerating && mainButton && !mainButton.disabled) {
-                         clearTimeout(autoAnalyzeTimeout);
-                         autoAnalyzeTimeout = setTimeout(() => {
-                             // Double check if it's really finished before triggering
-                             if(!document.querySelector('[d="M12 4.5v3m0 9v3m4.5-10.5l-2.12 2.12M6.62 17.38l-2.12 2.12M19.5 12h-3m-9 0H3M17.38 6.62l-2.12 2.12M6.62 6.62l2.12 2.12"]')) {
-                                 console.log("自動統整觸發...");
-                                 handleAnalysisRequest(false, true);
-                             }
-                         }, 2500); // Wait 2.5 seconds to be sure
-                     }
+                    // 原SVG偵測
+                    const generatingSvg = document.querySelector('[d="M12 4.5v3m0 9v3m4.5-10.5l-2.12 2.12M6.62 17.38l-2.12 2.12M19.5 12h-3m-9 0H3M17.38 6.62l-2.12 2.12M6.62 6.62l2.12 2.12"]');
+                    // fallback: 檢查是否有generating class或Stop按鈕（假設TypingMind使用）
+                    const generatingClass = document.querySelector('.generating, [title*="Stop"], [aria-label*="generating"]');  // 相容不同版本
+                    const isGenerating = generatingSvg || generatingClass;
+                    const mainButton = document.getElementById('analyzer-main-button');
+                    
+                    // fallback: 檢查訊息長度變化
+                    const currentMessageCount = document.querySelectorAll('.message').length;  // 假設聊天訊息有.message class
+                    const messagesChanged = currentMessageCount > lastMessageCount;
+                    lastMessageCount = currentMessageCount;
+
+                    // If we detect a change AND the generating spinner is gone, it might be complete.
+                    if (!isGenerating && mainButton && !mainButton.disabled && messagesChanged) {
+                        clearTimeout(autoAnalyzeTimeout);
+                        autoAnalyzeTimeout = setTimeout(() => {
+                            // Double check if it's really finished before triggering
+                            if (!document.querySelector('[d="M12 4.5v3m0 9v3m4.5-10.5l-2.12 2.12M6.62 17.38l-2.12 2.12M19.5 12h-3m-9 0H3M17.38 6.62l-2.12 2.12M6.62 6.62l2.12 2.12"]') && !generatingClass) {
+                                console.log("自動統整觸發...");
+                                handleAnalysisRequest(false, true);
+                            }
+                        }, 2500); // Wait 2.5 seconds to be sure
+                    }
                 }
             }
         });
