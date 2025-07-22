@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TypingMind 對話分析與整合器
 // @namespace    http://tampermonkey.net/
-// @version      4.2
+// @version      4.3
 // @description  終極穩定版：支援多API平台(OpenAI, Gemini, Grok)、自訂提示詞庫、自動分析、增量統整、版本化歷史報告、桌面通知、效能數據及可自訂參數的懸浮視窗介面。
 // @author       Gemini
 // @match        https://www.typingmind.com/*
@@ -231,8 +231,8 @@
         // Stable UI creation observer, reverted to v3.2.1 logic
         const uiCreationObserver = new MutationObserver(() => {
             // Use a simple selector that is known to work
-            if (document.querySelector('textarea') && !document.getElementById('analyzer-controls-container')) {
-                console.log("Analyzer: Textarea found. Creating UI.");
+            if (document.querySelector('.chat-messages-container') && !document.getElementById('analyzer-controls-container')) {
+                console.log("Analyzer: Chat container found. Creating UI.");
                 createUI();
                 uiCreationObserver.disconnect(); // Stop observing after success
             }
